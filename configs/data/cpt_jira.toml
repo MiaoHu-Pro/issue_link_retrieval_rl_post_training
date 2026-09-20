@@ -1,0 +1,14 @@
+# Paths are relative to the project root, not the shell working directory.
+repository = "Jira"
+version = "jira_v1"
+raw_directory = "data/raw/Jira"
+cutoff = "2018-01-26 23:59:59"
+validation_seed = "ilr-cpt-v1-seed42"
+validation_buckets = 100
+bucket_count = 10000
+shard_size = 50000
+substantive_description_words = 50
+sanitization_version = "conservative-v1"
+# Full-document exact deduplication; substantive exact descriptions share a split.
+# Near-duplicate similarity removal is intentionally not enabled without review.
+near_duplicate_policy = "disabled_pending_review"

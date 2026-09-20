@@ -1,0 +1,24 @@
+[project]
+name = "ilr-rl-post-training"
+version = "0.1.0"
+description = "Relation-conditioned issue retrieval and LLM post-training datasets"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+training = [
+    "torch>=2.6",
+    "transformers>=4.51",
+    "datasets>=3.0",
+    "peft>=0.14",
+    "accelerate>=1.0",
+    "bitsandbytes>=0.45",
+]
+
+[project.scripts]
+ilr-rl-post-training = "ilr_rl_post_training:main"
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"

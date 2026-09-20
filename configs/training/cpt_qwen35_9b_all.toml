@@ -1,0 +1,13 @@
+model_path = "~/scratch/llms_model/ilr_llms/base/Qwen3.5-9B-Base"
+output_dir = "~/scratch/llms_model/ilr_llms/adapters/qwen3.5-9b-cpt-all-v1"
+checkpoint_dir = "~/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-all-v1"
+method = "qlora"
+repositories = ["redhat_v1", "apache_v1", "jira_v1", "mongodb_v1", "qt_v1", "mojang_v1"]
+max_seq_length = 2048
+per_device_train_batch_size = 1
+per_device_eval_batch_size = 1
+gradient_accumulation_steps = 16
+learning_rate = 0.0002
+num_train_epochs = 1.0
+warmup_ratio = 0.03
+seed = 42

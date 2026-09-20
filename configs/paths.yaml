@@ -1,0 +1,9 @@
+# All paths containing model weights must resolve outside the project.
+# Expand ~ before use; subdirectories below are relative to model_root.
+model_root: "~/scratch/llms_model/ilr_llms"
+model_subdirs:
+  base: "base"
+  retrievers: "retrievers"
+  checkpoints: "checkpoints"
+  adapters: "adapters"
+  exported: "exported"
