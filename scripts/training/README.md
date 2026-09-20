@@ -40,3 +40,25 @@ For a first GPU smoke test, select one repository and cap the steps:
 ```
 
 The script uses 2,048-token packed causal-LM blocks by default. Tokenization and packing can consume substantial local cache space; ensure the project cache and external checkpoint filesystem have enough capacity before starting the full run.
+
+## Slurm submission
+
+Submit the A100 job from the project root:
+
+```bash
+sbatch scripts/training/submit_train_cpt_qwen35.sh
+```
+
+The submission script activates `ilr_rl_post_training_env`, requests one A100 GPU, 80 GB host memory, eight CPUs, and 60 hours, then runs the QLoRA defaults above. It requires the offline model at `~/scratch/llms_model/ilr_llms/base/Qwen3.5-9B-Base` and checks CUDA, BF16 support, PyTorch, Transformers, Datasets, and PEFT before training. Logs are written to `logs/qwen35-cpt-<job-id>.out` when submitted from the project root.
+
+Forward optional trainer arguments after the script:
+
+```bash
+sbatch scripts/training/submit_train_cpt_qwen35.sh \
+  --repositories redhat_v1 \
+  --max-steps 20 \
+  --save-steps 10 \
+  --eval-steps 10
+```
+
+The shell script sets `HF_DATASETS_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`; all model files must therefore be downloaded before submission. The QLoRA adapter and checkpoints remain under `~/scratch/llms_model/ilr_llms/`.
