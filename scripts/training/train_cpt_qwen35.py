@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 from pathlib import Path
@@ -142,14 +143,27 @@ def main():
     train = train.map(pack, batched=True, desc="Packing train tokens")
     valid = valid.map(pack, batched=True, desc="Packing validation tokens")
     collator = transformers.DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-    ta = transformers.TrainingArguments(
-        output_dir=str(a.checkpoint_dir), per_device_train_batch_size=a.per_device_train_batch_size,
-        per_device_eval_batch_size=a.per_device_eval_batch_size, gradient_accumulation_steps=a.gradient_accumulation_steps,
-        learning_rate=a.learning_rate, num_train_epochs=a.num_train_epochs, max_steps=a.max_steps,
-        warmup_ratio=a.warmup_ratio, logging_steps=a.logging_steps, save_steps=a.save_steps,
-        eval_steps=a.eval_steps, eval_strategy="steps", save_strategy="steps", bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
-        gradient_checkpointing=True, dataloader_num_workers=a.dataloader_num_workers, remove_unused_columns=False,
-        report_to="none", seed=a.seed, logging_first_step=True)
+    argument_values = {
+        "output_dir": str(a.checkpoint_dir), "per_device_train_batch_size": a.per_device_train_batch_size,
+        "per_device_eval_batch_size": a.per_device_eval_batch_size, "gradient_accumulation_steps": a.gradient_accumulation_steps,
+        "learning_rate": a.learning_rate, "num_train_epochs": a.num_train_epochs, "max_steps": a.max_steps,
+        "logging_steps": a.logging_steps, "save_steps": a.save_steps, "eval_steps": a.eval_steps,
+        "save_strategy": "steps", "bf16": torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+        "gradient_checkpointing": True, "dataloader_num_workers": a.dataloader_num_workers,
+        "remove_unused_columns": False, "report_to": "none", "seed": a.seed, "logging_first_step": True,
+    }
+    # Transformers renamed evaluation_strategy to eval_strategy in newer releases
+    # and some cluster environments expose neither warmup_ratio nor eval_strategy.
+    accepted = inspect.signature(transformers.TrainingArguments.__init__).parameters
+    argument_values["eval_strategy" if "eval_strategy" in accepted else "evaluation_strategy"] = "steps"
+    if "warmup_ratio" in accepted:
+        argument_values["warmup_ratio"] = a.warmup_ratio
+    elif "warmup_steps" in accepted:
+        import math
+        steps_per_epoch = math.ceil(len(train) / (a.per_device_train_batch_size * a.gradient_accumulation_steps))
+        total_steps = a.max_steps if a.max_steps > 0 else math.ceil(steps_per_epoch * a.num_train_epochs)
+        argument_values["warmup_steps"] = max(1, round(total_steps * a.warmup_ratio))
+    ta = transformers.TrainingArguments(**{k: v for k, v in argument_values.items() if k in accepted})
     trainer = transformers.Trainer(model=model, args=ta, train_dataset=train, eval_dataset=valid, data_collator=collator)
     trainer.train(resume_from_checkpoint=a.resume_from_checkpoint)
     trainer.save_model(str(a.output_dir))

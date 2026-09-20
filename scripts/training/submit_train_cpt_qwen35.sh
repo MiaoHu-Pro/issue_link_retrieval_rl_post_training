@@ -74,7 +74,7 @@ if [[ ! -f "${MODEL_PATH}/config.json" ]]; then
 fi
 
 python --version
-python -c "import torch, transformers, datasets, peft; print('PyTorch:', torch.__version__); print('Transformers:', transformers.__version__); print('Datasets:', datasets.__version__); print('PEFT:', peft.__version__); assert torch.cuda.is_available(), 'Allocated GPU is not visible'; print('GPU:', torch.cuda.get_device_name(0)); print('CUDA:', torch.version.cuda); print('BF16:', torch.cuda.is_bf16_supported())"
+python -c "import torch, transformers, datasets, peft, accelerate, bitsandbytes; print('PyTorch:', torch.__version__); print('Transformers:', transformers.__version__); print('Datasets:', datasets.__version__); print('PEFT:', peft.__version__); print('Accelerate:', accelerate.__version__); print('BitsAndBytes:', bitsandbytes.__version__); assert torch.cuda.is_available(), 'Allocated GPU is not visible'; print('GPU:', torch.cuda.get_device_name(0)); print('CUDA:', torch.version.cuda); print('BF16:', torch.cuda.is_bf16_supported())"
 nvidia-smi
 
 # Defaults are intentionally explicit. Arguments supplied after the script can
