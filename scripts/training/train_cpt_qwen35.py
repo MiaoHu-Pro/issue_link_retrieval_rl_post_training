@@ -84,7 +84,9 @@ def load_model(args, torch, transformers, LoraConfig, get_peft_model):
     tokenizer = transformers.AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=args.trust_remote_code, use_fast=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model_kwargs = {"torch_dtype": torch.bfloat16, "trust_remote_code": args.trust_remote_code}
+    # Transformers 5.x uses `dtype`; keep a compatibility fallback below for
+    # older model implementations that still only accept `torch_dtype`.
+    model_kwargs = {"dtype": torch.bfloat16, "trust_remote_code": args.trust_remote_code}
     if torch.cuda.is_available():
         model_kwargs["device_map"] = {"": 0}
     if args.method == "qlora":
@@ -100,7 +102,14 @@ def load_model(args, torch, transformers, LoraConfig, get_peft_model):
         cls = transformers.AutoModelForCausalLM
     try:
         model = cls.from_pretrained(args.model_path, **model_kwargs)
-    except (ValueError, TypeError, OSError):
+    except TypeError as first_error:
+        legacy_kwargs = dict(model_kwargs)
+        legacy_kwargs["torch_dtype"] = legacy_kwargs.pop("dtype")
+        try:
+            model = cls.from_pretrained(args.model_path, **legacy_kwargs)
+        except (ValueError, TypeError, OSError):
+            raise first_error
+    except (ValueError, OSError):
         if cls is transformers.AutoModelForCausalLM:
             raise
         model = transformers.AutoModelForCausalLM.from_pretrained(args.model_path, **model_kwargs)

@@ -97,19 +97,55 @@ echo "Adapter directory: ${ADAPTER_DIR}"
 echo "Checkpoint directory: ${CHECKPOINT_DIR}"
 
 
-#  Submit it from the project root:
+#For your A100 80GB, LoRA is the better choice for CPT and SFT.
 #
-#  cd ~/scratch/issue_tracking_system_mining/ilr_rl_post_training
-#  sbatch scripts/training/submit_train_cpt_qwen35.sh
+#   Factor                   LoRA                            QLoRA
+#  ━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#   GPU memory               Higher                          Lower
+#  ───────────────────────  ──────────────────────────────  ──────────────────────────────────────
+#   Training speed           Usually faster                  Usually slower
+#  ───────────────────────  ──────────────────────────────  ──────────────────────────────────────
+#   Quantization overhead    None                            4-bit dequantization overhead
+#  ───────────────────────  ──────────────────────────────  ──────────────────────────────────────
+#   Training stability       Simpler                         More dependencies and compatibility
+#                                                            issues
+#  ───────────────────────  ──────────────────────────────  ──────────────────────────────────────
+#   Expected quality         Preferred when memory allows    Usually close, sometimes slightly
+#                                                            worse
+#  ───────────────────────  ──────────────────────────────  ──────────────────────────────────────
+#   Your A100 80GB           Suitable                        Also suitable
 #
-#  Smoke-test submission:
+#  Your QLoRA job uses only about 25.6GB of 80GB, so you have enough memory to use LoRA and
+#  increase the batch size.
+#
+#  Recommended run:
 #
 #  sbatch scripts/training/submit_train_cpt_qwen35.sh \
-#    --repositories redhat_v1 \
-#    --max-steps 20 \
-#    --save-steps 10 \
-#    --eval-steps 10
+#    --method lora \
+#    --per-device-train-batch-size 2 \
+#    --gradient-accumulation-steps 8 \
+#    --dataloader-num-workers 8
 #
-#  Logs will be saved to:
+#  This keeps the same effective batch size as the current run:
 #
-#  logs/qwen35-cpt-<job-id>.out
+#  1 × 16 = 2 × 8
+#
+#  but should improve throughput substantially.
+#
+#  Use QLoRA when:
+#
+#  - LoRA exceeds available memory
+#  - You need larger sequence lengths
+#  - You need multiple models or reference models on one GPU
+#  - You want to reduce memory pressure
+#
+#  For this project, I would use:
+#
+#  CPT: LoRA
+#  SFT: LoRA
+#  GRPO/PPO: QLoRA if memory becomes tight
+#
+#  Since the current QLoRA run is projected to exceed 60 hours, LoRA with batch size 2 is the
+#  better next run.
+
+
