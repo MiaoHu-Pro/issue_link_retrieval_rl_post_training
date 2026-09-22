@@ -209,6 +209,21 @@ def load_model(args, torch, transformers, LoraConfig, PeftModel, get_peft_model,
     return model, tokenizer
 
 
+def token_id_list(value) -> list[int]:
+    """Normalize Transformers chat/tokenizer outputs to one flat ID list."""
+    if hasattr(value, "keys") and "input_ids" in value:
+        value = value["input_ids"]
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, tuple):
+        value = list(value)
+    if isinstance(value, list) and len(value) == 1 and isinstance(value[0], (list, tuple)):
+        value = list(value[0])
+    if not isinstance(value, list) or any(isinstance(item, (list, tuple)) for item in value):
+        raise TypeError(f"Expected one flat token-ID sequence, got {type(value).__name__}")
+    return [int(token_id) for token_id in value]
+
+
 def chat_template(tokenizer, messages, add_generation_prompt: bool) -> list[int]:
     kwargs = {
         "tokenize": True,
@@ -216,10 +231,12 @@ def chat_template(tokenizer, messages, add_generation_prompt: bool) -> list[int]
         "return_tensors": None,
     }
     try:
-        return tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
+        result = tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
+        return token_id_list(result)
     except TypeError:
         try:
-            return tokenizer.apply_chat_template(messages, **kwargs)
+            result = tokenizer.apply_chat_template(messages, **kwargs)
+            return token_id_list(result)
         except (AttributeError, ValueError):
             pass
     except (AttributeError, ValueError):
@@ -236,20 +253,24 @@ def chat_template(tokenizer, messages, add_generation_prompt: bool) -> list[int]
         text += "Assistant:\n"
     elif messages and messages[-1]["role"] == "assistant":
         text += tokenizer.eos_token or ""
-    return tokenizer(text, add_special_tokens=True)["input_ids"]
+    return token_id_list(tokenizer(text, add_special_tokens=True))
 
 
 def truncate_text(tokenizer, text: str, token_limit: int) -> str:
     if token_limit <= 0:
         return ""
-    ids = tokenizer(text, add_special_tokens=False, truncation=True, max_length=token_limit)["input_ids"]
+    ids = token_id_list(tokenizer(
+        text, add_special_tokens=False, truncation=True, max_length=token_limit
+    ))
     return tokenizer.decode(ids, skip_special_tokens=True)
 
 
 def compact_set_prompt(record: dict[str, Any], tokenizer, max_seq_length: int) -> list[dict[str, str]]:
     candidates = record["candidate_records"]
     # Reserve room for chat markers, relation text, completion, and candidate labels.
-    completion_tokens = len(tokenizer(record["completion"][0]["content"], add_special_tokens=False)["input_ids"])
+    completion_tokens = len(token_id_list(tokenizer(
+        record["completion"][0]["content"], add_special_tokens=False
+    )))
     content_budget = max(256, max_seq_length - completion_tokens - 768)
     query_budget = min(512, max(128, content_budget // 5))
     candidate_budget = max(24, (content_budget - query_budget) // max(1, len(candidates)))
@@ -279,9 +300,9 @@ def encode_record(record: dict[str, Any], tokenizer, task: str, max_seq_length: 
         if full_ids[: len(prompt_ids)] == prompt_ids:
             completion_ids = full_ids[len(prompt_ids):]
         else:
-            completion_ids = tokenizer(
+            completion_ids = token_id_list(tokenizer(
                 completion[0]["content"] + (tokenizer.eos_token or ""), add_special_tokens=False
-            )["input_ids"]
+            ))
         overflow = len(prompt_ids) + len(completion_ids) - max_seq_length
         if task != "set_retrieval" or overflow <= 0:
             break

@@ -171,6 +171,20 @@ Default output names follow:
 
 Intermediate Trainer checkpoints use the parallel `checkpoints/` hierarchy. The trainer refuses to start over an existing non-empty final adapter directory unless `--resume-from-checkpoint` is supplied. Preserve `run_config.json`, `validation_metrics.json`, Slurm logs, package versions, seed, and data manifest with every reported run.
 
+## Troubleshooting
+
+### `BatchEncoding` cannot be concatenated with a list
+
+Transformers 5.x may return a `BatchEncoding`, tensor, or one-item batched list from `apply_chat_template`, rather than a flat Python list. The shared trainer normalizes all of these forms before joining prompt and completion IDs. If a server checkout reports:
+
+```text
+TypeError: unsupported operand type(s) for +: 'BatchEncoding' and 'list'
+```
+
+update `scripts/training/sft_common.py` to the version containing `token_id_list`. A failed run may already have created `run_config.json` in its output directory. Rerun a smoke test with a fresh suffix such as `--run-suffix smoke-fix1`, or resume only when a valid `checkpoint-N` directory actually exists.
+
+The warning that Linux kernel 4.18 is older than the recommended kernel is emitted by the training stack and is not the cause of this type error. Monitor the corrected run for a genuine hang, but do not attribute an immediate Python traceback to the kernel warning.
+
 ## Evaluation boundary
 
 The training scripts report validation cross-entropy. They do not claim retrieval effectiveness. A separate deterministic evaluator must generate constrained JSON and calculate candidate Recall@M, end-to-end Recall@k, Hits/Rr@k, MAP, nDCG, set precision/recall/F1/F2, exact-set match, invalid-output rate, and latency.
