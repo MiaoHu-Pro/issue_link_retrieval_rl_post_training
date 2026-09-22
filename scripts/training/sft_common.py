@@ -1,0 +1,482 @@
+#!/usr/bin/env python3
+"""Shared streaming SFT implementation for issue-link selection tasks."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import inspect
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+
+REPOSITORIES = ("apache", "jira", "redhat", "mongodb", "qt", "mojang")
+TASK_SLUG = {"set_retrieval": "set", "pointwise": "pointwise"}
+
+
+def stable_fraction(value: str) -> float:
+    number = int(hashlib.sha256(value.encode("utf-8")).hexdigest()[:16], 16)
+    return number / float(16**16 - 1)
+
+
+def build_parser(task: str) -> argparse.ArgumentParser:
+    project = Path(__file__).resolve().parents[2]
+    model_root = Path(os.environ.get("ILR_MODEL_ROOT", "~/scratch/llms_model/ilr_llms")).expanduser()
+    default_length = 4096 if task == "set_retrieval" else 2048
+    default_steps = 1000 if task == "set_retrieval" else 2000
+    parser = argparse.ArgumentParser(
+        description=f"Stream and train Qwen3.5 for the {task} issue-link SFT task."
+    )
+    parser.add_argument("--project-root", type=Path, default=project)
+    parser.add_argument("--model-root", type=Path, default=model_root)
+    parser.add_argument("--model-path", type=Path, default=None)
+    parser.add_argument("--cpt-adapter-path", type=Path, default=None)
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--checkpoint-dir", type=Path, default=None)
+    parser.add_argument(
+        "--run-suffix", default="",
+        help="Optional output-name suffix, for example smoke or seed-42.",
+    )
+    parser.add_argument("--initialization", choices=("base", "cpt"), required=True)
+    parser.add_argument("--dataset", type=str.lower, choices=(*REPOSITORIES, "all"), required=True)
+    parser.add_argument(
+        "--data-version", default="v1_full",
+        help="Directory suffix, e.g. v1_full resolves apache_v1_full. Use v2 for corrected pools.",
+    )
+    parser.add_argument("--method", choices=("lora", "qlora"), default="lora")
+    parser.add_argument("--max-seq-length", type=int, default=default_length)
+    parser.add_argument("--max-steps", type=int, default=default_steps)
+    parser.add_argument("--per-device-train-batch-size", type=int, default=1)
+    parser.add_argument("--per-device-eval-batch-size", type=int, default=1)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--warmup-ratio", type=float, default=0.03)
+    parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--logging-steps", type=int, default=10)
+    parser.add_argument("--save-steps", type=int, default=250)
+    parser.add_argument("--eval-steps", type=int, default=250)
+    parser.add_argument("--save-total-limit", type=int, default=2)
+    parser.add_argument("--max-eval-samples", type=int, default=1000)
+    parser.add_argument("--shuffle-buffer-size", type=int, default=4096)
+    parser.add_argument("--dataloader-num-workers", type=int, default=1)
+    parser.add_argument("--sampling", choices=("proportional", "temperature"), default="temperature")
+    parser.add_argument("--sampling-temperature", type=float, default=0.5)
+    parser.add_argument(
+        "--negative-keep-probability", type=float, default=0.10,
+        help="Pointwise only: retain this deterministic fraction of label-0 training rows.",
+    )
+    parser.add_argument(
+        "--empty-keep-probability", type=float, default=1.0,
+        help="Set retrieval only: retain this fraction of empty-target training rows.",
+    )
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--resume-from-checkpoint", default=None)
+    parser.add_argument("--trust-remote-code", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    return parser
+
+
+def normalize_paths(args: argparse.Namespace, task: str) -> argparse.Namespace:
+    args.project_root = args.project_root.expanduser().resolve()
+    args.model_root = args.model_root.expanduser().resolve()
+    args.model_path = (args.model_path or args.model_root / "base/Qwen3.5-9B-Base").expanduser().resolve()
+    args.cpt_adapter_path = (
+        args.cpt_adapter_path or args.model_root / "adapters/qwen3.5-9b-cpt-all-v1"
+    ).expanduser().resolve()
+    dataset_slug = args.dataset
+    version_slug = args.data_version.replace("/", "-").replace("_", "-")
+    run_name = f"qwen3.5-9b-{args.initialization}-sft-{TASK_SLUG[task]}-{dataset_slug}-{version_slug}"
+    if args.run_suffix:
+        safe_suffix = args.run_suffix.replace("/", "-").replace("_", "-")
+        run_name += f"-{safe_suffix}"
+    args.output_dir = (args.output_dir or args.model_root / "adapters" / run_name).expanduser().resolve()
+    args.checkpoint_dir = (
+        args.checkpoint_dir or args.model_root / "checkpoints" / run_name
+    ).expanduser().resolve()
+    return args
+
+
+def selected_repositories(dataset: str) -> tuple[str, ...]:
+    return REPOSITORIES if dataset == "all" else (dataset,)
+
+
+def dataset_paths(args: argparse.Namespace, task: str) -> dict[str, dict[str, Path]]:
+    root = args.project_root / "data/training/sft" / task
+    result: dict[str, dict[str, Path]] = {}
+    for repository in selected_repositories(args.dataset):
+        directory = root / f"{repository}_{args.data_version}"
+        paths = {split: directory / f"{split}.jsonl" for split in ("train", "validation", "test")}
+        paths["manifest"] = directory / "manifest.json"
+        missing = [str(path) for path in paths.values() if not path.is_file()]
+        if missing:
+            raise FileNotFoundError("Missing SFT dataset files:\n  " + "\n  ".join(missing))
+        result[repository] = paths
+    return result
+
+
+def read_manifests(paths: dict[str, dict[str, Path]], task: str) -> dict[str, dict[str, Any]]:
+    prefix = "set" if task == "set_retrieval" else "point"
+    manifests = {}
+    for repository, repository_paths in paths.items():
+        manifest = json.loads(repository_paths["manifest"].read_text(encoding="utf-8"))
+        for split in ("train", "validation", "test"):
+            key = f"{prefix}_{split}"
+            if key not in manifest.get("counts", {}):
+                raise ValueError(f"{repository_paths['manifest']} lacks counts.{key}")
+        manifests[repository] = manifest
+    return manifests
+
+
+def sampling_probabilities(
+    repositories: tuple[str, ...], manifests: dict[str, dict[str, Any]], task: str,
+    sampling: str, temperature: float,
+) -> list[float] | None:
+    if len(repositories) == 1 or sampling == "proportional":
+        return None
+    if not 0.0 <= temperature <= 1.0:
+        raise ValueError("--sampling-temperature must be between 0 and 1")
+    prefix = "set" if task == "set_retrieval" else "point"
+    weights = [float(manifests[repo]["counts"][f"{prefix}_train"]) ** temperature for repo in repositories]
+    total = sum(weights)
+    return [weight / total for weight in weights]
+
+
+def import_training_stack():
+    try:
+        import torch
+        import transformers
+        from datasets import interleave_datasets, load_dataset
+        from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+    except ImportError as exc:
+        raise SystemExit(
+            "Install training dependencies with the project training extra. "
+            f"Missing package: {exc}"
+        ) from exc
+    return torch, transformers, load_dataset, interleave_datasets, LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+
+
+def load_model(args, torch, transformers, LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training):
+    if not (args.model_path / "config.json").is_file():
+        raise FileNotFoundError(f"Base model is missing: {args.model_path}")
+    if args.initialization == "cpt" and not (args.cpt_adapter_path / "adapter_config.json").is_file():
+        raise FileNotFoundError(f"CPT adapter is missing: {args.cpt_adapter_path}")
+
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        args.model_path, trust_remote_code=args.trust_remote_code, use_fast=True
+    )
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+
+    model_kwargs = {"dtype": torch.bfloat16, "trust_remote_code": args.trust_remote_code}
+    if torch.cuda.is_available():
+        model_kwargs["device_map"] = {"": 0}
+    if args.method == "qlora":
+        if not torch.cuda.is_available():
+            raise SystemExit("QLoRA requires CUDA")
+        model_kwargs["quantization_config"] = transformers.BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+    model_class = getattr(transformers, "AutoModelForImageTextToText", transformers.AutoModelForCausalLM)
+    try:
+        model = model_class.from_pretrained(args.model_path, **model_kwargs)
+    except (ValueError, OSError):
+        model = transformers.AutoModelForCausalLM.from_pretrained(args.model_path, **model_kwargs)
+    except TypeError:
+        model_kwargs["torch_dtype"] = model_kwargs.pop("dtype")
+        model = model_class.from_pretrained(args.model_path, **model_kwargs)
+
+    if args.method == "qlora":
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    model.config.use_cache = False
+    model.enable_input_require_grads()
+
+    if args.initialization == "cpt":
+        # Continue from a copied in-memory CPT adapter and save the resulting
+        # CPT+SFT adapter to a new directory. The original CPT files stay intact.
+        model = PeftModel.from_pretrained(model, args.cpt_adapter_path, is_trainable=True)
+    else:
+        lora = LoraConfig(
+            r=32, lora_alpha=64, lora_dropout=0.05, bias="none",
+            task_type="CAUSAL_LM", target_modules="all-linear",
+        )
+        model = get_peft_model(model, lora)
+    model.print_trainable_parameters()
+    return model, tokenizer
+
+
+def chat_template(tokenizer, messages, add_generation_prompt: bool) -> list[int]:
+    kwargs = {
+        "tokenize": True,
+        "add_generation_prompt": add_generation_prompt,
+        "return_tensors": None,
+    }
+    try:
+        return tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
+    except TypeError:
+        try:
+            return tokenizer.apply_chat_template(messages, **kwargs)
+        except (AttributeError, ValueError):
+            pass
+    except (AttributeError, ValueError):
+        pass
+
+    # Base tokenizers do not always ship a chat template. Keep a deterministic
+    # fallback whose prompt rendering is an exact prefix of the full rendering.
+    role_names = {"system": "System", "user": "User", "assistant": "Assistant"}
+    text = "".join(
+        f"{role_names.get(message['role'], message['role'].title())}:\n{message['content']}\n"
+        for message in messages
+    )
+    if add_generation_prompt:
+        text += "Assistant:\n"
+    elif messages and messages[-1]["role"] == "assistant":
+        text += tokenizer.eos_token or ""
+    return tokenizer(text, add_special_tokens=True)["input_ids"]
+
+
+def truncate_text(tokenizer, text: str, token_limit: int) -> str:
+    if token_limit <= 0:
+        return ""
+    ids = tokenizer(text, add_special_tokens=False, truncation=True, max_length=token_limit)["input_ids"]
+    return tokenizer.decode(ids, skip_special_tokens=True)
+
+
+def compact_set_prompt(record: dict[str, Any], tokenizer, max_seq_length: int) -> list[dict[str, str]]:
+    candidates = record["candidate_records"]
+    # Reserve room for chat markers, relation text, completion, and candidate labels.
+    completion_tokens = len(tokenizer(record["completion"][0]["content"], add_special_tokens=False)["input_ids"])
+    content_budget = max(256, max_seq_length - completion_tokens - 768)
+    query_budget = min(512, max(128, content_budget // 5))
+    candidate_budget = max(24, (content_budget - query_budget) // max(1, len(candidates)))
+    query_text = truncate_text(tokenizer, record["query_text"], query_budget)
+    rows = [
+        f"Query issue {record['query_uid']}:\n{query_text}",
+        f"Relation: {record['relation']}",
+        f"Relation definition: {record['relation_definition']}",
+        "Candidates:",
+    ]
+    for candidate in candidates:
+        text = truncate_text(tokenizer, candidate["text"], candidate_budget)
+        rows.append(f"{candidate['label']}: {text}")
+    return [record["prompt"][0], {"role": "user", "content": "\n".join(rows)}]
+
+
+def encode_record(record: dict[str, Any], tokenizer, task: str, max_seq_length: int) -> dict[str, list[int]]:
+    completion = record["completion"]
+    compact_limit = max_seq_length
+    for _ in range(6):
+        prompt_messages = (
+            compact_set_prompt(record, tokenizer, compact_limit)
+            if task == "set_retrieval" else record["prompt"]
+        )
+        prompt_ids = chat_template(tokenizer, prompt_messages, add_generation_prompt=True)
+        full_ids = chat_template(tokenizer, prompt_messages + completion, add_generation_prompt=False)
+        if full_ids[: len(prompt_ids)] == prompt_ids:
+            completion_ids = full_ids[len(prompt_ids):]
+        else:
+            completion_ids = tokenizer(
+                completion[0]["content"] + (tokenizer.eos_token or ""), add_special_tokens=False
+            )["input_ids"]
+        overflow = len(prompt_ids) + len(completion_ids) - max_seq_length
+        if task != "set_retrieval" or overflow <= 0:
+            break
+        compact_limit = max(1024, compact_limit - overflow - 128)
+    if len(completion_ids) >= max_seq_length:
+        raise ValueError("Completion alone exceeds --max-seq-length")
+    if task == "set_retrieval" and len(prompt_ids) + len(completion_ids) > max_seq_length:
+        raise ValueError(
+            f"Could not preserve every set candidate within {max_seq_length} tokens for {record['query_id']}"
+        )
+    if task == "pointwise":
+        prompt_ids = prompt_ids[: max_seq_length - len(completion_ids)]
+    input_ids = prompt_ids + completion_ids
+    return {
+        "input_ids": input_ids,
+        "attention_mask": [1] * len(input_ids),
+        "labels": [-100] * len(prompt_ids) + completion_ids.copy(),
+    }
+
+
+def keep_training_record(record: dict[str, Any], args, task: str) -> bool:
+    if task == "pointwise" and int(record["label"]) == 0:
+        candidate = record.get("candidate", {})
+        key = f"{args.seed}:{record['query_id']}:{candidate.get('issue_uid', candidate.get('label', ''))}"
+        return stable_fraction(key) < args.negative_keep_probability
+    if task == "set_retrieval" and not record.get("gold_candidate_labels"):
+        return stable_fraction(f"{args.seed}:{record['query_id']}") < args.empty_keep_probability
+    return True
+
+
+def load_streams(args, task, tokenizer, paths, manifests, load_dataset, interleave_datasets):
+    repositories = selected_repositories(args.dataset)
+
+    def make_stream(repository: str, split: str):
+        stream = load_dataset(
+            "json", data_files=str(paths[repository][split]), split="train", streaming=True
+        )
+        if split == "train":
+            stream = stream.filter(lambda row: keep_training_record(row, args, task))
+            stream = stream.shuffle(seed=args.seed, buffer_size=args.shuffle_buffer_size)
+        columns = list(stream.features) if stream.features is not None else None
+        stream = stream.map(
+            lambda row: encode_record(row, tokenizer, task, args.max_seq_length),
+            remove_columns=columns,
+        )
+        return stream
+
+    train_streams = [make_stream(repo, "train") for repo in repositories]
+    valid_streams = [make_stream(repo, "validation") for repo in repositories]
+    probabilities = sampling_probabilities(
+        repositories, manifests, task, args.sampling, args.sampling_temperature
+    )
+    if len(repositories) == 1:
+        train, valid = train_streams[0], valid_streams[0]
+    else:
+        train = interleave_datasets(
+            train_streams, probabilities=probabilities, seed=args.seed,
+            stopping_strategy="all_exhausted",
+        )
+        valid = interleave_datasets(
+            valid_streams, probabilities=None, seed=args.seed,
+            stopping_strategy="first_exhausted",
+        )
+    return train, valid.take(args.max_eval_samples), probabilities
+
+
+class CompletionOnlyCollator:
+    def __init__(self, tokenizer, torch):
+        self.tokenizer = tokenizer
+        self.torch = torch
+
+    def __call__(self, features):
+        max_length = max(len(feature["input_ids"]) for feature in features)
+        input_ids, attention_mask, labels = [], [], []
+        for feature in features:
+            padding = max_length - len(feature["input_ids"])
+            input_ids.append(feature["input_ids"] + [self.tokenizer.pad_token_id] * padding)
+            attention_mask.append(feature["attention_mask"] + [0] * padding)
+            labels.append(feature["labels"] + [-100] * padding)
+        return {
+            "input_ids": self.torch.tensor(input_ids, dtype=self.torch.long),
+            "attention_mask": self.torch.tensor(attention_mask, dtype=self.torch.long),
+            "labels": self.torch.tensor(labels, dtype=self.torch.long),
+        }
+
+
+def training_arguments(args, torch, transformers):
+    values = {
+        "output_dir": str(args.checkpoint_dir),
+        "max_steps": args.max_steps,
+        "per_device_train_batch_size": args.per_device_train_batch_size,
+        "per_device_eval_batch_size": args.per_device_eval_batch_size,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "learning_rate": args.learning_rate,
+        "weight_decay": args.weight_decay,
+        "logging_steps": args.logging_steps,
+        "save_steps": args.save_steps,
+        "eval_steps": args.eval_steps,
+        "save_strategy": "steps",
+        "save_total_limit": args.save_total_limit,
+        "bf16": torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+        "tf32": torch.cuda.is_available(),
+        "gradient_checkpointing": True,
+        "dataloader_num_workers": args.dataloader_num_workers,
+        "remove_unused_columns": False,
+        "report_to": "none",
+        "seed": args.seed,
+        "data_seed": args.seed,
+        "logging_first_step": True,
+        "lr_scheduler_type": "cosine",
+    }
+    accepted = inspect.signature(transformers.TrainingArguments.__init__).parameters
+    strategy_name = "eval_strategy" if "eval_strategy" in accepted else "evaluation_strategy"
+    values[strategy_name] = "steps"
+    if "warmup_ratio" in accepted:
+        values["warmup_ratio"] = args.warmup_ratio
+    elif "warmup_steps" in accepted:
+        values["warmup_steps"] = max(1, round(args.max_steps * args.warmup_ratio))
+    return transformers.TrainingArguments(**{key: value for key, value in values.items() if key in accepted})
+
+
+def dry_run_report(args, task, paths, manifests):
+    repositories = selected_repositories(args.dataset)
+    probabilities = sampling_probabilities(
+        repositories, manifests, task, args.sampling, args.sampling_temperature
+    )
+    report = {
+        "status": "dry-run",
+        "task": task,
+        "initialization": args.initialization,
+        "dataset": args.dataset,
+        "data_version": args.data_version,
+        "model_path": str(args.model_path),
+        "cpt_adapter_path": str(args.cpt_adapter_path) if args.initialization == "cpt" else None,
+        "output_dir": str(args.output_dir),
+        "checkpoint_dir": str(args.checkpoint_dir),
+        "files": {repo: {key: str(value) for key, value in repo_paths.items()} for repo, repo_paths in paths.items()},
+        "counts": {repo: manifests[repo]["counts"] for repo in repositories},
+        "candidate_recall": {repo: manifests[repo].get("candidate_recall") for repo in repositories},
+        "sampling_probabilities": dict(zip(repositories, probabilities)) if probabilities else None,
+        "warning": "v1_full natural pools are pilot inputs; use corrected v2 pools for final paper runs.",
+    }
+    print(json.dumps(report, indent=2))
+
+
+def run(task: str) -> None:
+    args = normalize_paths(build_parser(task).parse_args(), task)
+    if not 0.0 <= args.negative_keep_probability <= 1.0:
+        raise ValueError("--negative-keep-probability must be between 0 and 1")
+    if not 0.0 <= args.empty_keep_probability <= 1.0:
+        raise ValueError("--empty-keep-probability must be between 0 and 1")
+    if args.max_steps <= 0:
+        raise ValueError("Streaming training requires --max-steps greater than zero")
+    paths = dataset_paths(args, task)
+    manifests = read_manifests(paths, task)
+    if args.dry_run:
+        dry_run_report(args, task, paths, manifests)
+        return
+    if args.output_dir.exists() and any(args.output_dir.iterdir()) and not args.resume_from_checkpoint:
+        raise FileExistsError(f"Output directory is not empty: {args.output_dir}")
+
+    stack = import_training_stack()
+    torch, transformers, load_dataset, interleave_datasets, LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training = stack
+    model, tokenizer = load_model(
+        args, torch, transformers, LoraConfig, PeftModel, get_peft_model,
+        prepare_model_for_kbit_training,
+    )
+    train, valid, probabilities = load_streams(
+        args, task, tokenizer, paths, manifests, load_dataset, interleave_datasets
+    )
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    run_config = vars(args) | {
+        "task": task,
+        "resolved_data_files": {
+            repo: {key: str(value) for key, value in repo_paths.items()} for repo, repo_paths in paths.items()
+        },
+        "sampling_probabilities": probabilities,
+        "effective_batch_size": args.per_device_train_batch_size * args.gradient_accumulation_steps,
+    }
+    (args.output_dir / "run_config.json").write_text(
+        json.dumps(run_config, default=str, indent=2) + "\n", encoding="utf-8"
+    )
+    trainer = transformers.Trainer(
+        model=model,
+        args=training_arguments(args, torch, transformers),
+        train_dataset=train,
+        eval_dataset=valid,
+        data_collator=CompletionOnlyCollator(tokenizer, torch),
+    )
+    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+    trainer.save_model(str(args.output_dir))
+    tokenizer.save_pretrained(str(args.output_dir))
+    metrics = trainer.evaluate()
+    (args.output_dir / "validation_metrics.json").write_text(
+        json.dumps(metrics, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"Saved {task} adapter to {args.output_dir}")
