@@ -12,7 +12,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --partition=i7_h200
 #SBATCH --gres=gpu:1
-#SBATCH --time=120:00:00
+#SBATCH --time=60:00:00
 #SBATCH --job-name=qwen35-eval
 #SBATCH --output=logs/%x-%j.out
 
