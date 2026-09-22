@@ -84,8 +84,7 @@ sbatch --partition=a100 --gres=gpu:1 \
   --run-suffix smoke \
   --max-steps 10 \
   --eval-steps 5 \
-  --save-steps 5 \
-  --partition=a100 --gres=gpu:1
+  --save-steps 5
 ```
 
 ### A2-SR — CPT, set retrieval, Apache
