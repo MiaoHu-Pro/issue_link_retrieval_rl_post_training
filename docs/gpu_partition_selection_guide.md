@@ -55,6 +55,8 @@ sbatch scripts/training/submit_train_sft_qwen35.sh \
 
 To use a different GPU partition, put Slurm resource options **before the script path**. Command-line `sbatch` resource options override the `#SBATCH` defaults inside the script.
 
+The same rule applies to `--job-name` and `--output`. Options placed after the script path are passed to the SFT application and will cause an "unrecognized arguments" error if they are Slurm options.
+
 General form:
 
 ```bash

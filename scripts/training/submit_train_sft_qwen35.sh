@@ -2,10 +2,14 @@
 # Submit one independent SFT job from the project root.
 #
 # Examples:
-#   sbatch scripts/training/submit_train_sft_qwen35.sh \
+#   sbatch --partition=a100 --gres=gpu:1 \
+#     --job-name=sft-set-base-apache-smoke \
+#     scripts/training/submit_train_sft_qwen35.sh \
 #     --task set_retrieval --initialization base --dataset Apache
 #
-#   sbatch scripts/training/submit_train_sft_qwen35.sh \
+#   sbatch --partition=a100 --gres=gpu:1 \
+#     --job-name=sft-pw-cpt-all-smoke \
+#     scripts/training/submit_train_sft_qwen35.sh \
 #     --task pointwise --initialization cpt --dataset all --max-steps 20
 
 #SBATCH --mail-user=miao.hu@soton.ac.uk
@@ -18,7 +22,9 @@
 #SBATCH --gres=gpu:1
 #SBATCH --time=60:00:00
 #SBATCH --job-name=qwen35-sft
-#SBATCH --output=logs/qwen35-sft-%j.out
+# `%x` is the Slurm job name and `%j` is the unique job ID. Supply a detailed
+# name with `sbatch --job-name=...` before this script path.
+#SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
 
