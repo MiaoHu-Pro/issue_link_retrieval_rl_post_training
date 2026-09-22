@@ -1,4 +1,4 @@
-# Running the 28 SFT jobs
+# Running the 28 SFT jobs and evaluations
 
 For choosing A100, H100, H200, L40S, L4, or scavenger partitions, see `docs/gpu_partition_selection_guide.md`.
 
@@ -68,6 +68,8 @@ sft-set-cpt-all-seed-42
 ```
 
 The commands explicitly use `--data-version v1_full`. These pools are suitable for software smoke tests and the v1 lexical-retrieval ablation. For the final paper protocol, create the corrected v2 pools and change every command to `--data-version v2`.
+
+> **Current production runs:** the completed training jobs were submitted without `--run-suffix smoke`, `--max-steps 10`, `--eval-steps 5`, or `--save-steps 5`. Therefore, the test commands in Section 12 deliberately omit `--adapter-suffix`. They resolve production adapter names such as `qwen3.5-9b-cpt-sft-set-apache-v1-full`. Adding `--adapter-suffix smoke` during testing would point to a different adapter.
 
 ## 2. Apache: four jobs
 
@@ -589,3 +591,245 @@ The launcher then uses these initial defaults:
 These are engineering starting points. Select final steps, learning rate, candidate-pool version, and stopping checkpoint using validation data. Do not select them from test results.
 
 For final paper runs, replace the smoke suffix with a seed-specific suffix and set the matching seed, such as `--run-suffix seed-42 --seed 42`. Use matching `seed-43` and `seed-44` runs only after the v2 data and final validation-selected hyperparameters have been frozen.
+
+## 12. Evaluate the production adapters on the test splits
+
+These commands match the adapters produced after removing the four smoke arguments. There is no `--adapter-suffix` in any command.
+
+Run from the project root and ensure the log directory already exists before calling `sbatch`:
+
+```bash
+cd ~/scratch/its_project/issue_link_retrieval_rl_post_training
+mkdir -p logs
+```
+
+Slurm options remain before the shell-script path. Arguments after `submit_evaluate_sft.sh` belong to the Python evaluator.
+
+### Apache test evaluations
+
+```bash
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-apache-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization base \
+  --model-dataset apache --eval-dataset apache \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-apache-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization cpt \
+  --model-dataset apache --eval-dataset apache \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-apache-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization base \
+  --model-dataset apache --eval-dataset apache \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-apache-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization cpt \
+  --model-dataset apache --eval-dataset apache \
+  --split test --data-version v1_full
+```
+
+### Jira test evaluations
+
+```bash
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-jira-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization base \
+  --model-dataset jira --eval-dataset jira \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-jira-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization cpt \
+  --model-dataset jira --eval-dataset jira \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-jira-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization base \
+  --model-dataset jira --eval-dataset jira \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-jira-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization cpt \
+  --model-dataset jira --eval-dataset jira \
+  --split test --data-version v1_full
+```
+
+### RedHat test evaluations
+
+```bash
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-redhat-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization base \
+  --model-dataset redhat --eval-dataset redhat \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-redhat-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization cpt \
+  --model-dataset redhat --eval-dataset redhat \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-redhat-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization base \
+  --model-dataset redhat --eval-dataset redhat \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-redhat-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization cpt \
+  --model-dataset redhat --eval-dataset redhat \
+  --split test --data-version v1_full
+```
+
+### MongoDB test evaluations
+
+```bash
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-mongodb-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization base \
+  --model-dataset mongodb --eval-dataset mongodb \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-mongodb-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization cpt \
+  --model-dataset mongodb --eval-dataset mongodb \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-mongodb-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization base \
+  --model-dataset mongodb --eval-dataset mongodb \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-mongodb-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization cpt \
+  --model-dataset mongodb --eval-dataset mongodb \
+  --split test --data-version v1_full
+```
+
+### Qt test evaluations
+
+```bash
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-qt-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization base \
+  --model-dataset qt --eval-dataset qt \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-qt-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization cpt \
+  --model-dataset qt --eval-dataset qt \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-qt-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization base \
+  --model-dataset qt --eval-dataset qt \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-qt-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization cpt \
+  --model-dataset qt --eval-dataset qt \
+  --split test --data-version v1_full
+```
+
+### Mojang test evaluations
+
+```bash
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-mojang-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization base \
+  --model-dataset mojang --eval-dataset mojang \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-mojang-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization cpt \
+  --model-dataset mojang --eval-dataset mojang \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-mojang-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization base \
+  --model-dataset mojang --eval-dataset mojang \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-mojang-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization cpt \
+  --model-dataset mojang --eval-dataset mojang \
+  --split test --data-version v1_full
+```
+
+### All-six-repository test evaluations
+
+The `all` adapters are evaluated across all six test files in one job. `metrics.json` contains overall and per-repository results.
+
+```bash
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-all-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization base \
+  --model-dataset all --eval-dataset all \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-all-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization cpt \
+  --model-dataset all --eval-dataset all \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-all-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization base \
+  --model-dataset all --eval-dataset all \
+  --split test --data-version v1_full
+
+sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-all-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization cpt \
+  --model-dataset all --eval-dataset all \
+  --split test --data-version v1_full
+```
+
+Submit exactly the same 28 commands with the matrix helper:
+
+```bash
+scripts/evaluation/submit_evaluation_matrix.sh \
+  --partition a100 \
+  --gres gpu:1 \
+  --split test \
+  --data-version v1_full
+```
+
+Preview them without submitting:
+
+```bash
+scripts/evaluation/submit_evaluation_matrix.sh \
+  --partition a100 \
+  --gres gpu:1 \
+  --split test \
+  --data-version v1_full \
+  --dry-run
+```
+
+The pointwise commands use the default threshold of `0.5`. For classification results with a tuned threshold, first evaluate the matching adapter on `--split validation --select-threshold`, then pass the resulting value to its test command as `--threshold VALUE`. Never select this threshold from the test split. Ranking metrics such as MAP, MRR, Recall@k, Hits@k, and nDCG@k do not depend on this binary threshold.
+
+Evaluation artifacts are written under:
+
+```text
+experiment_results/evaluation/<adapter>/<evaluation-dataset>-v1_full/test/full/
+```
+
+Each completed evaluation contains `run_config.json`, `metrics.json`, and compressed `predictions.jsonl.gz`.

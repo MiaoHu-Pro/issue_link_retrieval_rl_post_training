@@ -1,0 +1,183 @@
+
+Apache:
+running:
+
+sbatch --partition=a100 --gres=gpu:1   --job-name=sft-pw-cpt-apache-smoke   scripts/training/submit_train_sft_qwen35.sh   --task pointwise   --initialization cpt   --dataset Apache   --data-version v1_full
+sbatch --partition=a100 --gres=gpu:1   --job-name=sft-pw-base-apache-smoke   scripts/training/submit_train_sft_qwen35.sh   --task pointwise   --initialization base   --dataset Apache   --data-version v1_full
+sbatch --partition=a100 --gres=gpu:1   --job-name=sft-set-cpt-apache-smoke   scripts/training/submit_train_sft_qwen35.sh   --task set_retrieval   --initialization cpt   --dataset Apache   --data-version v1_full
+sbatch --partition=a100 --gres=gpu:1   --job-name=sft-set-base-apache-smoke   scripts/training/submit_train_sft_qwen35.sh   --task set_retrieval   --initialization base   --dataset Apache   --data-version v1_full
+
+srun --jobid=1611934 --overlap nvidia-smi
+
+
+sbatch --partition=swarm_h100 --gres=gpu:1 \
+  --job-name=sft-set-base-jira \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization base \
+  --dataset Jira \
+  --data-version v1_full
+
+  sbatch --partition=swarm_h100 --gres=gpu:1 \
+  --job-name=sft-set-cpt-jira \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization cpt \
+  --dataset Jira \
+  --data-version v1_full
+
+
+  sbatch --partition=swarm_h100 --gres=gpu:1 \
+  --job-name=sft-pw-base-jira \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization base \
+  --dataset Jira \
+  --data-version v1_full
+
+  sbatch --partition=swarm_h100 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-jira \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization cpt \
+  --dataset Jira \
+  --data-version v1_full
+
+
+----redhat
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-redhat \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization base \
+  --dataset RedHat \
+  --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-redhat \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization cpt \
+  --dataset RedHat \
+  --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-redhat \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization base \
+  --dataset RedHat \
+  --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-redhat \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization cpt \
+  --dataset RedHat \
+  --data-version v1_full
+
+
+
+
+----
+mongodb
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-mongodb \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization base \
+  --dataset MongoDB \
+  --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-mongodb \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization cpt \
+  --dataset MongoDB \
+  --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-mongodb \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization base \
+  --dataset MongoDB \
+  --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-mongodb \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization cpt \
+  --dataset MongoDB \
+  --data-version v1_full
+----------------
+
+QT
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-qt \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization base \
+  --dataset Qt \
+  --data-version v1_full
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-qt \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization cpt \
+  --dataset Qt \
+  --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-qt \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization base \
+  --dataset Qt \
+  --data-version v1_full
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-qt \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization cpt \
+  --dataset Qt \
+  --data-version v1_full
+
+
+test:
+
+RedHat test evaluations
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-set-base-redhat-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization base \
+  --model-dataset redhat --eval-dataset redhat \
+  --split test --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-set-cpt-redhat-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization cpt \
+  --model-dataset redhat --eval-dataset redhat \
+  --split test --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-pw-base-redhat-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization base \
+  --model-dataset redhat --eval-dataset redhat \
+  --split test --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-pw-cpt-redhat-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization cpt \
+  --model-dataset redhat --eval-dataset redhat \
+  --split test --data-version v1_full

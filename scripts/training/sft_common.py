@@ -265,13 +265,14 @@ def truncate_text(tokenizer, text: str, token_limit: int) -> str:
     return tokenizer.decode(ids, skip_special_tokens=True)
 
 
-def compact_set_prompt(record: dict[str, Any], tokenizer, max_seq_length: int) -> list[dict[str, str]]:
+def compact_set_prompt(
+    record: dict[str, Any], tokenizer, max_seq_length: int,
+    completion_token_reserve: int = 128,
+) -> list[dict[str, str]]:
     candidates = record["candidate_records"]
-    # Reserve room for chat markers, relation text, completion, and candidate labels.
-    completion_tokens = len(token_id_list(tokenizer(
-        record["completion"][0]["content"], add_special_tokens=False
-    )))
-    content_budget = max(256, max_seq_length - completion_tokens - 768)
+    # Use a fixed completion reserve rather than the gold completion length, so
+    # prompt truncation cannot reveal target-set size during training/evaluation.
+    content_budget = max(256, max_seq_length - completion_token_reserve - 768)
     query_budget = min(512, max(128, content_budget // 5))
     candidate_budget = max(24, (content_budget - query_budget) // max(1, len(candidates)))
     query_text = truncate_text(tokenizer, record["query_text"], query_budget)
