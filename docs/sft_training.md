@@ -64,13 +64,22 @@ Evaluate candidate Recall@M for several values such as 32, 64, 128, 500, and 100
     data/training/sft/set_retrieval/apache_v1_full/train.jsonl
     data/training/sft/pointwise/apache_v1_full/train.jsonl
 
-The JSONL files are streamed. They are not loaded or tokenized into a second full Arrow dataset, because individual training files are multiple gigabytes. Streaming training requires a positive `--max-steps` value.
+The JSONL files are streamed. They are not loaded or tokenized into a second full Arrow dataset, because individual training files are multiple gigabytes.
 
-For `--dataset all`, temperature sampling is the default:
+An unsuffixed `--dataset all` run with no explicit `--max-steps` uses exhaustive mode. It concatenates the six shuffled repository streams without replacement, retains every row, and calculates one-pass optimizer steps from the manifests:
+
+| Task | Training records | Effective batch | One-pass optimizer steps |
+|---|---:|---:|---:|
+| Set retrieval | 468,487 | 8 | 58,561 |
+| Pointwise | 14,991,370 | 16 | 936,961 |
+
+Supplying `--max-steps` selects fixed-step mode, including smoke tests. In fixed-step all-repository ablations, temperature sampling uses:
+
+To avoid thousands of validation passes, exhaustive defaults scale with the resolved run length. Set retrieval logs every 59 steps, saves every 1,000 steps, and evaluates every 2,929 steps. Pointwise logs every 937 steps, saves every 1,000 steps, and evaluates every 46,849 steps. Explicit `--logging-steps`, `--save-steps`, and `--eval-steps` still override these values.
 
     p_d = n_d^alpha / sum_j(n_j^alpha), alpha = 0.5
 
-This limits domination by Apache and Mojang. Use `--sampling proportional` as an ablation. Run-level paths, counts, candidate recall, sampling probabilities, and hyperparameters are written to `run_config.json`.
+This limits domination by Apache and Mojang. Use `--sampling proportional` as an ablation. Exhaustive mode does not use sampling probabilities and does not repeat smaller repositories. Run-level paths, counts, candidate recall, training mode, records per pass, resolved steps, and hyperparameters are written to `run_config.json`.
 
 ## Prompt construction and loss
 
@@ -106,11 +115,11 @@ The default adapter configuration matches CPT: rank 32, alpha 64, dropout 0.05, 
 
 ## Pointwise class balance
 
-Each query contributes up to 32 pointwise records, while positives are sparse. The trainer keeps all positive rows and deterministically retains 10% of negative rows by default:
+Each query contributes up to 32 pointwise records, while positives are sparse. Fixed-step training keeps all positive rows and deterministically retains 10% of negative rows by default:
 
     --negative-keep-probability 0.10
 
-The decision is a stable hash of seed, query ID, and candidate ID, so repeated runs use the same subset. Test evaluation must use the complete natural candidate pool. Negative downsampling changes the training prior, so classification thresholds must be selected on the complete validation set.
+The decision is a stable hash of seed, query ID, and candidate ID, so repeated runs use the same subset. Exhaustive `--dataset all` training sets the retention probability to `1.0` and visits all 14,991,370 pointwise rows. Test evaluation must use the complete natural candidate pool. Negative downsampling changes the training prior, so classification thresholds must be selected on the complete validation set.
 
 ## Dry runs
 
@@ -126,6 +135,8 @@ For the all-repository mixture:
 
     python scripts/training/train_sft_set_retrieval.py \
       --initialization cpt --dataset all --dry-run
+
+The dry-run output must say `"training_mode": "exhaustive"`, with 468,487 records and 58,561 steps for set retrieval.
 
 ## Slurm submission
 

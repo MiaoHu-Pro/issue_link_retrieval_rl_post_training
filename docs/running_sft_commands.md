@@ -11,7 +11,7 @@ This guide contains all 28 independent SFT job commands:
 =28\text{ jobs}.
 \]
 
-The dataset configurations are Apache, Jira, RedHat, MongoDB, Qt, Mojang, and the temperature-balanced mixture of all six repositories. The two initializations are Qwen3.5-9B-Base and the completed CPT adapter. The two tasks are set retrieval and pointwise classification.
+The dataset configurations are Apache, Jira, RedHat, MongoDB, Qt, Mojang, and all six repositories. Fixed-step `all` runs use temperature-balanced sampling; exhaustive `all` runs visit every row once. The two initializations are Qwen3.5-9B-Base and the completed CPT adapter. The two tasks are set retrieval and pointwise classification.
 
 ## 1. Before submitting
 
@@ -469,7 +469,7 @@ sbatch --partition=a100 --gres=gpu:1 \
 
 ## 8. All six repositories: four jobs
 
-The `all` runs stream all six repositories and use temperature-balanced sampling with exponent 0.5 by default.
+The commands shown here are 10-step smoke tests because they explicitly pass `--max-steps 10`. An unsuffixed production command with `--dataset all` and no `--max-steps` uses every training row from all six repositories exactly once. It does not use temperature sampling.
 
 ### T1-SR — Base, set retrieval, all repositories
 
@@ -581,7 +581,7 @@ After all relevant smoke tests pass, remove these four lines from a command:
 
 For example, convert the Apache CPT set-retrieval command in Section 2 by retaining its task, initialization, dataset, and data-version arguments while removing the four smoke arguments above.
 
-The launcher then uses these initial defaults:
+For repository-specific production runs, the launcher uses these initial defaults:
 
 | Task | Maximum sequence length | Maximum steps | Evaluation interval | Checkpoint interval |
 |---|---:|---:|---:|---:|
@@ -589,6 +589,83 @@ The launcher then uses these initial defaults:
 | Pointwise | 2048 | 2000 | 250 | 250 |
 
 These are engineering starting points. Select final steps, learning rate, candidate-pool version, and stopping checkpoint using validation data. Do not select them from test results.
+
+For `--dataset all`, removing `--max-steps` changes the mode to one exhaustive pass:
+
+| Task | All-six training records | Effective batch | Resolved steps |
+|---|---:|---:|---:|
+| Set retrieval | 468,487 | 8 | 58,561 |
+| Pointwise | 14,991,370 | 16 | 936,961 |
+
+The pointwise exhaustive run also keeps 100% of negative rows. These runs are much larger than the former 1,000/2,000-step jobs and may exceed one 60-hour allocation. Exhaustive checkpoints use a separate `-exhaustive` checkpoint directory, and submitting the same command again automatically resumes its newest checkpoint.
+
+For set retrieval, exhaustive defaults save every 1,000 steps and evaluate every 2,929 steps. For pointwise, they save every 1,000 steps and evaluate every 46,849 steps. This avoids applying the former 250-step evaluation interval thousands of times.
+
+### Production commands using every row from all six datasets
+
+The following four commands activate exhaustive mode because they specify `--dataset all` and omit `--max-steps`. They also omit `--run-suffix`, so their final adapter names match the production evaluation commands in Section 12.
+
+#### Base initialization, set retrieval
+
+```bash
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-all-full \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization base \
+  --dataset all \
+  --data-version v1_full
+```
+
+#### CPT initialization, set retrieval
+
+```bash
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-all-full \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization cpt \
+  --dataset all \
+  --data-version v1_full
+```
+
+#### Base initialization, pointwise
+
+```bash
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-all-full \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization base \
+  --dataset all \
+  --data-version v1_full
+```
+
+#### CPT initialization, pointwise
+
+```bash
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-all-full \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization cpt \
+  --dataset all \
+  --data-version v1_full
+```
+
+Before consuming GPU time, verify the resolved coverage:
+
+```bash
+python scripts/training/train_sft_set_retrieval.py \
+  --initialization cpt \
+  --dataset all \
+  --data-version v1_full \
+  --dry-run
+```
+
+The report should show `training_mode: exhaustive`, `records_per_pass: 468487`, and `resolved_max_steps: 58561`.
+
+For `--dataset all`, the launcher permits replacement of the matching unsuffixed final adapter. The existing adapter weights remain usable while training is running; final adapter files are replaced only after training succeeds. Other repository-specific adapter directories retain the non-empty-directory protection.
 
 For final paper runs, replace the smoke suffix with a seed-specific suffix and set the matching seed, such as `--run-suffix seed-42 --seed 42`. Use matching `seed-43` and `seed-44` runs only after the v2 data and final validation-selected hyperparameters have been frozen.
 

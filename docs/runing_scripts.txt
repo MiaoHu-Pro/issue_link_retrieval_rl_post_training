@@ -5,7 +5,7 @@ running:
 sbatch --partition=a100 --gres=gpu:1   --job-name=sft-pw-cpt-apache-smoke   scripts/training/submit_train_sft_qwen35.sh   --task pointwise   --initialization cpt   --dataset Apache   --data-version v1_full
 sbatch --partition=a100 --gres=gpu:1   --job-name=sft-pw-base-apache-smoke   scripts/training/submit_train_sft_qwen35.sh   --task pointwise   --initialization base   --dataset Apache   --data-version v1_full
 sbatch --partition=a100 --gres=gpu:1   --job-name=sft-set-cpt-apache-smoke   scripts/training/submit_train_sft_qwen35.sh   --task set_retrieval   --initialization cpt   --dataset Apache   --data-version v1_full
-sbatch --partition=a100 --gres=gpu:1   --job-name=sft-set-base-apache-smoke   scripts/training/submit_train_sft_qwen35.sh   --task set_retrieval   --initialization base   --dataset Apache   --data-version v1_full
+sbatch --partition=swarm_h100 --gres=gpu:1   --job-name=sft-set-base-apache   scripts/training/submit_train_sft_qwen35.sh   --task set_retrieval   --initialization base   --dataset Apache   --data-version v1_full
 
 srun --jobid=1611934 --overlap nvidia-smi
 
@@ -155,6 +155,176 @@ sbatch --partition=i7_h200 --gres=gpu:1 \
   --data-version v1_full
 
 
+
+
+Mojang: four jobs
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-mojang-smoke \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization base \
+  --dataset Mojang \
+  --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-mojang-smoke \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization cpt \
+  --dataset Mojang \
+  --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-mojang-smoke \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization base \
+  --dataset Mojang \
+  --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-mojang-smoke \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization cpt \
+  --dataset Mojang \
+  --data-version v1_full
+
+run all datasets:
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-all-full \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization base \
+  --dataset all \
+  --data-version v1_full
+
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-all-full \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization cpt \
+  --dataset all \
+  --data-version v1_full
+
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-all-full \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization base \
+  --dataset all \
+  --data-version v1_full
+
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-all-full \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization cpt \
+  --dataset all \
+  --data-version v1_full
+
+
+-----
+test all datasets (new command):
+Use these four commands after the corresponding exhaustive training jobs complete.
+  Because training used no --run-suffix, testing also uses no --adapter-suffix.
+
+  ### Base, set retrieval
+
+  sbatch --partition=i7_h200 --gres=gpu:1 \
+    --job-name=eval-set-base-all-test \
+    scripts/evaluation/submit_evaluate_sft.sh \
+    --task set_retrieval \
+    --initialization base \
+    --model-dataset all \
+    --eval-dataset all \
+    --split test \
+    --data-version v1_full
+
+  ### CPT, set retrieval
+
+  sbatch --partition=i7_h200 --gres=gpu:1 \
+    --job-name=eval-set-cpt-all-test \
+    scripts/evaluation/submit_evaluate_sft.sh \
+    --task set_retrieval \
+    --initialization cpt \
+    --model-dataset all \
+    --eval-dataset all \
+    --split test \
+    --data-version v1_full
+
+  ### Base, pointwise
+
+  sbatch --partition=i7_h200 --gres=gpu:1 \
+    --job-name=eval-pw-base-all-test \
+    scripts/evaluation/submit_evaluate_sft.sh \
+    --task pointwise \
+    --initialization base \
+    --model-dataset all \
+    --eval-dataset all \
+    --split test \
+    --data-version v1_full \
+    --threshold 0.5
+
+  ### CPT, pointwise
+
+  sbatch --partition=i7_h200 --gres=gpu:1 \
+    --job-name=eval-pw-cpt-all-test \
+    scripts/evaluation/submit_evaluate_sft.sh \
+    --task pointwise \
+    --initialization cpt \
+    --model-dataset all \
+    --eval-dataset all \
+    --split test \
+    --data-version v1_full \
+    --threshold 0.5
+
+  The all evaluations process the test splits of Apache, Jira, RedHat, MongoDB, Qt, and
+  Mojang. Results are saved under:
+
+  experiment_results/evaluation/
+    qwen3.5-9b-{base|cpt}-sft-{set|pointwise}-all-v1-full/
+    all-v1_full/test/full/
+
+  Each result contains:
+
+  metrics.json
+  predictions.jsonl.gz
+  run_config.json
+
+  For final pointwise classification results,
+  select the threshold on validation first:
+
+  sbatch --partition=i7_h200 --gres=gpu:1 \
+    --job-name=eval-pw-cpt-all-validation \
+    scripts/evaluation/submit_evaluate_sft.sh \
+    --task pointwise \
+    --initialization cpt \
+    --model-dataset all \
+    --eval-dataset all \
+    --split validation \
+    --data-version v1_full \
+    --select-threshold
+
+  Then use the value in selected_threshold.json as --threshold VALUE for
+  the test job.
+  Ranking metrics such as MAP, MRR, Recall@k, Hits@k,
+  and nDCG@k do not depend on this
+  threshold.
+
+
+-----------------------------------------------
+
 test:
 
 RedHat test evaluations
@@ -181,3 +351,84 @@ sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-pw-cpt-redhat-test \
   --task pointwise --initialization cpt \
   --model-dataset redhat --eval-dataset redhat \
   --split test --data-version v1_full
+
+---
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-set-base-mongodb-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization base \
+  --model-dataset mongodb --eval-dataset mongodb \
+  --split test --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-set-cpt-mongodb-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization cpt \
+  --model-dataset mongodb --eval-dataset mongodb \
+  --split test --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-pw-base-mongodb-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization base \
+  --model-dataset mongodb --eval-dataset mongodb \
+  --split test --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-pw-cpt-mongodb-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization cpt \
+  --model-dataset mongodb --eval-dataset mongodb \
+  --split test --data-version v1_full
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-set-base-qt-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization base \
+  --model-dataset qt --eval-dataset qt \
+  --split test --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-set-cpt-qt-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization cpt \
+  --model-dataset qt --eval-dataset qt \
+  --split test --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-pw-base-qt-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization base \
+  --model-dataset qt --eval-dataset qt \
+  --split test --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-pw-cpt-qt-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization cpt \
+  --model-dataset qt --eval-dataset qt \
+  --split test --data-version v1_full
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-set-base-mojang-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization base \
+  --model-dataset mojang --eval-dataset mojang \
+  --split test --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-set-cpt-mojang-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task set_retrieval --initialization cpt \
+  --model-dataset mojang --eval-dataset mojang \
+  --split test --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-pw-base-mojang-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization base \
+  --model-dataset mojang --eval-dataset mojang \
+  --split test --data-version v1_full
+
+sbatch --partition=i7_h200 --gres=gpu:1 --job-name=eval-pw-cpt-mojang-test \
+  scripts/evaluation/submit_evaluate_sft.sh \
+  --task pointwise --initialization cpt \
+  --model-dataset mojang --eval-dataset mojang \
+  --split test --data-version v1_full
+
+
+
+

@@ -66,7 +66,6 @@ case "${TASK}" in
         TRAINER="${PROJECT_ROOT}/scripts/training/train_sft_set_retrieval.py"
         DEFAULT_ARGS=(
             --max-seq-length 4096
-            --max-steps 1000
             --gradient-accumulation-steps 8
         )
         ;;
@@ -74,9 +73,7 @@ case "${TASK}" in
         TRAINER="${PROJECT_ROOT}/scripts/training/train_sft_pointwise.py"
         DEFAULT_ARGS=(
             --max-seq-length 2048
-            --max-steps 2000
             --gradient-accumulation-steps 16
-            --negative-keep-probability 0.10
         )
         ;;
     *)
@@ -100,6 +97,12 @@ case "${DATASET}" in
         exit 2
         ;;
 esac
+
+# All-repository jobs may replace only their matching all-repository adapter.
+# Existing repository-specific adapters retain the original safety guard.
+if [[ "${DATASET}" == "all" ]]; then
+    DEFAULT_ARGS+=(--overwrite-output)
+fi
 
 CONDA_BASE="$(conda info --base)"
 set +u

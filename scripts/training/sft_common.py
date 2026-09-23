@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import inspect
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -46,16 +47,24 @@ def build_parser(task: str) -> argparse.ArgumentParser:
     )
     parser.add_argument("--method", choices=("lora", "qlora"), default="lora")
     parser.add_argument("--max-seq-length", type=int, default=default_length)
-    parser.add_argument("--max-steps", type=int, default=default_steps)
+    parser.set_defaults(fixed_step_default=default_steps)
+    parser.add_argument(
+        "--max-steps", type=int, default=None,
+        help="Explicit fixed optimizer-step budget. If omitted, --dataset all makes one exhaustive pass.",
+    )
+    parser.add_argument(
+        "--training-mode", choices=("auto", "fixed_steps", "exhaustive"), default="auto",
+        help="auto uses exhaustive for dataset=all unless --max-steps is supplied; other runs stay fixed-step.",
+    )
     parser.add_argument("--per-device-train-batch-size", type=int, default=1)
     parser.add_argument("--per-device-eval-batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
     parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--logging-steps", type=int, default=10)
-    parser.add_argument("--save-steps", type=int, default=250)
-    parser.add_argument("--eval-steps", type=int, default=250)
+    parser.add_argument("--logging-steps", type=int, default=None)
+    parser.add_argument("--save-steps", type=int, default=None)
+    parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--save-total-limit", type=int, default=2)
     parser.add_argument("--max-eval-samples", type=int, default=1000)
     parser.add_argument("--shuffle-buffer-size", type=int, default=4096)
@@ -63,15 +72,23 @@ def build_parser(task: str) -> argparse.ArgumentParser:
     parser.add_argument("--sampling", choices=("proportional", "temperature"), default="temperature")
     parser.add_argument("--sampling-temperature", type=float, default=0.5)
     parser.add_argument(
-        "--negative-keep-probability", type=float, default=0.10,
-        help="Pointwise only: retain this deterministic fraction of label-0 training rows.",
+        "--negative-keep-probability", type=float, default=None,
+        help="Pointwise negative retention. Defaults to 1.0 for exhaustive mode and 0.10 otherwise.",
     )
     parser.add_argument(
-        "--empty-keep-probability", type=float, default=1.0,
+        "--empty-keep-probability", type=float, default=None,
         help="Set retrieval only: retain this fraction of empty-target training rows.",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--resume-from-checkpoint", default=None)
+    parser.add_argument(
+        "--auto-resume", action=argparse.BooleanOptionalAction, default=True,
+        help="Resume the newest checkpoint in the resolved checkpoint directory when present.",
+    )
+    parser.add_argument(
+        "--overwrite-output", action="store_true",
+        help="Allow final adapter files for this exact run name to be replaced after successful training.",
+    )
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -128,6 +145,62 @@ def read_manifests(paths: dict[str, dict[str, Path]], task: str) -> dict[str, di
     return manifests
 
 
+def resolve_training_plan(args: argparse.Namespace, task: str, manifests) -> argparse.Namespace:
+    """Resolve an exact one-pass all-repository run while leaving other runs fixed-step."""
+    explicit_steps = args.max_steps is not None
+    if args.training_mode == "auto":
+        args.training_mode = "fixed_steps" if explicit_steps or args.dataset != "all" else "exhaustive"
+    if args.training_mode == "exhaustive" and args.dataset != "all":
+        raise ValueError("Exhaustive mode is restricted to --dataset all; repository-specific jobs are unchanged")
+    if args.training_mode == "exhaustive" and explicit_steps:
+        raise ValueError("Do not combine --training-mode exhaustive with --max-steps")
+
+    args.negative_keep_probability = (
+        args.negative_keep_probability
+        if args.negative_keep_probability is not None
+        else (1.0 if args.training_mode == "exhaustive" else 0.10)
+    )
+    args.empty_keep_probability = (
+        args.empty_keep_probability if args.empty_keep_probability is not None else 1.0
+    )
+    prefix = "set" if task == "set_retrieval" else "point"
+    args.records_per_pass = sum(
+        int(manifest["counts"][f"{prefix}_train"]) for manifest in manifests.values()
+    )
+    effective_batch = args.per_device_train_batch_size * args.gradient_accumulation_steps
+    if args.training_mode == "exhaustive":
+        if args.negative_keep_probability != 1.0 or args.empty_keep_probability != 1.0:
+            raise ValueError("Exhaustive mode requires both keep probabilities to be 1.0")
+        args.max_steps = math.ceil(args.records_per_pass / effective_batch)
+        # Do not reuse checkpoints from the former short fixed-step all-data run.
+        args.checkpoint_dir = args.checkpoint_dir.with_name(args.checkpoint_dir.name + "-exhaustive")
+    else:
+        args.max_steps = args.max_steps or args.fixed_step_default
+    args.logging_steps = args.logging_steps or (
+        max(10, math.ceil(args.max_steps / 1000)) if args.training_mode == "exhaustive" else 10
+    )
+    args.eval_steps = args.eval_steps or (
+        max(250, math.ceil(args.max_steps / 20)) if args.training_mode == "exhaustive" else 250
+    )
+    args.save_steps = args.save_steps or (
+        min(1000, args.eval_steps) if args.training_mode == "exhaustive" else 250
+    )
+    return args
+
+
+def newest_checkpoint(directory: Path) -> Path | None:
+    candidates = []
+    if directory.is_dir():
+        for path in directory.glob("checkpoint-*"):
+            try:
+                step = int(path.name.rsplit("-", 1)[1])
+            except ValueError:
+                continue
+            if path.is_dir():
+                candidates.append((step, path))
+    return max(candidates, default=(0, None))[1]
+
+
 def sampling_probabilities(
     repositories: tuple[str, ...], manifests: dict[str, dict[str, Any]], task: str,
     sampling: str, temperature: float,
@@ -146,14 +219,14 @@ def import_training_stack():
     try:
         import torch
         import transformers
-        from datasets import interleave_datasets, load_dataset
+        from datasets import concatenate_datasets, interleave_datasets, load_dataset
         from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
     except ImportError as exc:
         raise SystemExit(
             "Install training dependencies with the project training extra. "
             f"Missing package: {exc}"
         ) from exc
-    return torch, transformers, load_dataset, interleave_datasets, LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+    return torch, transformers, load_dataset, interleave_datasets, concatenate_datasets, LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
 
 def load_model(args, torch, transformers, LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training):
@@ -334,7 +407,10 @@ def keep_training_record(record: dict[str, Any], args, task: str) -> bool:
     return True
 
 
-def load_streams(args, task, tokenizer, paths, manifests, load_dataset, interleave_datasets):
+def load_streams(
+    args, task, tokenizer, paths, manifests,
+    load_dataset, interleave_datasets, concatenate_datasets,
+):
     repositories = selected_repositories(args.dataset)
 
     def make_stream(repository: str, split: str):
@@ -358,6 +434,16 @@ def load_streams(args, task, tokenizer, paths, manifests, load_dataset, interlea
     )
     if len(repositories) == 1:
         train, valid = train_streams[0], valid_streams[0]
+    elif args.training_mode == "exhaustive":
+        # Concatenation visits every row exactly once. Probabilistic
+        # interleaving can repeat exhausted repositories and is therefore not
+        # suitable for a one-pass coverage claim.
+        train = concatenate_datasets(train_streams)
+        valid = interleave_datasets(
+            valid_streams, probabilities=None, seed=args.seed,
+            stopping_strategy="first_exhausted",
+        )
+        probabilities = None
     else:
         train = interleave_datasets(
             train_streams, probabilities=probabilities, seed=args.seed,
@@ -427,7 +513,7 @@ def training_arguments(args, torch, transformers):
 
 def dry_run_report(args, task, paths, manifests):
     repositories = selected_repositories(args.dataset)
-    probabilities = sampling_probabilities(
+    probabilities = None if args.training_mode == "exhaustive" else sampling_probabilities(
         repositories, manifests, task, args.sampling, args.sampling_temperature
     )
     report = {
@@ -435,6 +521,12 @@ def dry_run_report(args, task, paths, manifests):
         "task": task,
         "initialization": args.initialization,
         "dataset": args.dataset,
+        "training_mode": args.training_mode,
+        "records_per_pass": args.records_per_pass,
+        "resolved_max_steps": args.max_steps,
+        "logging_steps": args.logging_steps,
+        "save_steps": args.save_steps,
+        "eval_steps": args.eval_steps,
         "data_version": args.data_version,
         "model_path": str(args.model_path),
         "cpt_adapter_path": str(args.cpt_adapter_path) if args.initialization == "cpt" else None,
@@ -451,28 +543,38 @@ def dry_run_report(args, task, paths, manifests):
 
 def run(task: str) -> None:
     args = normalize_paths(build_parser(task).parse_args(), task)
+    paths = dataset_paths(args, task)
+    manifests = read_manifests(paths, task)
+    args = resolve_training_plan(args, task, manifests)
     if not 0.0 <= args.negative_keep_probability <= 1.0:
         raise ValueError("--negative-keep-probability must be between 0 and 1")
     if not 0.0 <= args.empty_keep_probability <= 1.0:
         raise ValueError("--empty-keep-probability must be between 0 and 1")
     if args.max_steps <= 0:
         raise ValueError("Streaming training requires --max-steps greater than zero")
-    paths = dataset_paths(args, task)
-    manifests = read_manifests(paths, task)
     if args.dry_run:
         dry_run_report(args, task, paths, manifests)
         return
-    if args.output_dir.exists() and any(args.output_dir.iterdir()) and not args.resume_from_checkpoint:
+    if args.training_mode == "exhaustive" and args.resume_from_checkpoint is None and args.auto_resume:
+        checkpoint = newest_checkpoint(args.checkpoint_dir)
+        if checkpoint is not None:
+            args.resume_from_checkpoint = str(checkpoint)
+            print(f"Auto-resuming from {checkpoint}", flush=True)
+    if (
+        args.output_dir.exists() and any(args.output_dir.iterdir())
+        and not args.resume_from_checkpoint and not args.overwrite_output
+    ):
         raise FileExistsError(f"Output directory is not empty: {args.output_dir}")
 
     stack = import_training_stack()
-    torch, transformers, load_dataset, interleave_datasets, LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training = stack
+    torch, transformers, load_dataset, interleave_datasets, concatenate_datasets, LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training = stack
     model, tokenizer = load_model(
         args, torch, transformers, LoraConfig, PeftModel, get_peft_model,
         prepare_model_for_kbit_training,
     )
     train, valid, probabilities = load_streams(
-        args, task, tokenizer, paths, manifests, load_dataset, interleave_datasets
+        args, task, tokenizer, paths, manifests,
+        load_dataset, interleave_datasets, concatenate_datasets,
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -482,11 +584,16 @@ def run(task: str) -> None:
             repo: {key: str(value) for key, value in repo_paths.items()} for repo, repo_paths in paths.items()
         },
         "sampling_probabilities": probabilities,
+        "training_mode": args.training_mode,
+        "records_per_pass": args.records_per_pass,
         "effective_batch_size": args.per_device_train_batch_size * args.gradient_accumulation_steps,
     }
-    (args.output_dir / "run_config.json").write_text(
-        json.dumps(run_config, default=str, indent=2) + "\n", encoding="utf-8"
-    )
+    serialized_config = json.dumps(run_config, default=str, indent=2) + "\n"
+    # Checkpoints own the in-progress configuration. When replacing an adapter,
+    # leave the completed adapter directory untouched until training succeeds.
+    (args.checkpoint_dir / "run_config.json").write_text(serialized_config, encoding="utf-8")
+    if not args.overwrite_output or not (args.output_dir / "adapter_model.safetensors").is_file():
+        (args.output_dir / "run_config.json").write_text(serialized_config, encoding="utf-8")
     trainer = transformers.Trainer(
         model=model,
         args=training_arguments(args, torch, transformers),
@@ -497,6 +604,7 @@ def run(task: str) -> None:
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     trainer.save_model(str(args.output_dir))
     tokenizer.save_pretrained(str(args.output_dir))
+    (args.output_dir / "run_config.json").write_text(serialized_config, encoding="utf-8")
     metrics = trainer.evaluate()
     (args.output_dir / "validation_metrics.json").write_text(
         json.dumps(metrics, indent=2) + "\n", encoding="utf-8"
