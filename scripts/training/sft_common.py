@@ -108,6 +108,7 @@ def normalize_paths(args: argparse.Namespace, task: str) -> argparse.Namespace:
         safe_suffix = args.run_suffix.replace("/", "-").replace("_", "-")
         run_name += f"-{safe_suffix}"
     args.output_dir = (args.output_dir or args.model_root / "adapters" / run_name).expanduser().resolve()
+    args.checkpoint_dir_was_explicit = args.checkpoint_dir is not None
     args.checkpoint_dir = (
         args.checkpoint_dir or args.model_root / "checkpoints" / run_name
     ).expanduser().resolve()
@@ -173,7 +174,8 @@ def resolve_training_plan(args: argparse.Namespace, task: str, manifests) -> arg
             raise ValueError("Exhaustive mode requires both keep probabilities to be 1.0")
         args.max_steps = math.ceil(args.records_per_pass / effective_batch)
         # Do not reuse checkpoints from the former short fixed-step all-data run.
-        args.checkpoint_dir = args.checkpoint_dir.with_name(args.checkpoint_dir.name + "-exhaustive")
+        if not args.checkpoint_dir_was_explicit:
+            args.checkpoint_dir = args.checkpoint_dir.with_name(args.checkpoint_dir.name + "-exhaustive")
     else:
         args.max_steps = args.max_steps or args.fixed_step_default
     args.logging_steps = args.logging_steps or (
