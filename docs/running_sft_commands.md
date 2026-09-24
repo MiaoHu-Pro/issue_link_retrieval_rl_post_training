@@ -1,21 +1,16 @@
-# Running the 28 SFT jobs and evaluations
+# Running the production SFT experiments
 
-For choosing A100, H100, H200, L40S, L4, or scavenger partitions, see `docs/gpu_partition_selection_guide.md`.
+This guide contains copy-and-paste commands for the 28 production SFT jobs:
 
-This guide contains all 28 independent SFT job commands:
+```text
+7 dataset configurations × 2 initializations × 2 tasks = 28 jobs
+```
 
-\[
-7\text{ dataset configurations}
-\times 2\text{ initializations}
-\times 2\text{ tasks}
-=28\text{ jobs}.
-\]
+The datasets are Apache, Jira, RedHat, MongoDB, Qt, Mojang, and the combined corpus. The initializations are Qwen3.5-9B-Base and the completed CPT adapter. The tasks are set retrieval and pointwise classification.
 
-The dataset configurations are Apache, Jira, RedHat, MongoDB, Qt, Mojang, and all six repositories. Fixed-step `all` runs use temperature-balanced sampling; exhaustive `all` runs visit every row once. The two initializations are Qwen3.5-9B-Base and the completed CPT adapter. The two tasks are set retrieval and pointwise classification.
+## 1. Common protocol and setup
 
-## 1. Before submitting
-
-Run from the project root on the server:
+Run every command from the project root:
 
 ```bash
 cd ~/scratch/its_project/issue_link_retrieval_rl_post_training
@@ -25,588 +20,468 @@ mkdir -p logs
 The launcher expects:
 
 ```text
-Base model:
-~/scratch/llms_model/ilr_llms/base/Qwen3.5-9B-Base
-
-CPT adapter:
-~/scratch/llms_model/ilr_llms/adapters/qwen3.5-9b-cpt-all-v1
-
-Conda environment:
-ilr_rl_post_training_env
+Base model: ~/scratch/llms_model/ilr_llms/base/Qwen3.5-9B-Base
+CPT adapter: ~/scratch/llms_model/ilr_llms/adapters/qwen3.5-9b-cpt-all-v1
+Conda environment: ilr_rl_post_training_env
 ```
 
-The commands below are **10-step smoke tests**. Each command uses `--run-suffix smoke`, so its adapter and checkpoints cannot overwrite or block the later production run.
-
-`--run-suffix smoke` is necessary for the commands in this guide because they deliberately run only 10 steps. It is an output-isolation label; it does not change the model, data, loss, or optimizer. For a production run, remove `--run-suffix smoke` and the three short-run overrides, or replace the suffix with a seed label such as `seed-42` for final repeated experiments.
-
-### Slurm options must precede the script
-
-Resource and log-naming arguments belong to `sbatch` and must be written before the shell-script path:
-
-The required order is `sbatch [Slurm options] scripts/training/submit_train_sft_qwen35.sh [training options]`. Every command below follows this order and has a unique job name.
-
-This creates a log such as:
-
-```text
-logs/sft-set-base-apache-smoke-1602345.out
-```
-
-Do not put `--partition`, `--gres`, `--time`, `--job-name`, or `--output` after `submit_train_sft_qwen35.sh`. Arguments after the script path are application arguments and are forwarded to the Python trainer.
-
-Use this job-name convention:
-
-```text
-sft-{set|pw}-{base|cpt}-{apache|jira|redhat|mongodb|qt|mojang|all}-{smoke|prod|seed-N}
-```
-
-Examples:
-
-```text
-sft-set-cpt-apache-smoke
-sft-pw-base-redhat-prod
-sft-set-cpt-all-seed-42
-```
-
-The commands explicitly use `--data-version v1_full`. These pools are suitable for software smoke tests and the v1 lexical-retrieval ablation. For the final paper protocol, create the corrected v2 pools and change every command to `--data-version v2`.
-
-> **Current production runs:** the completed training jobs were submitted without `--run-suffix smoke`, `--max-steps 10`, `--eval-steps 5`, or `--save-steps 5`. Therefore, the test commands in Section 12 deliberately omit `--adapter-suffix`. They resolve production adapter names such as `qwen3.5-9b-cpt-sft-set-apache-v1-full`. Adding `--adapter-suffix smoke` during testing would point to a different adapter.
-
-## 2. Apache: four jobs
-
-### A1-SR — Base, set retrieval, Apache
+All commands use batch size 2 and gradient accumulation 8, giving effective batch size 16. Set retrieval consumes every training record once. Pointwise retains every positive and an exact deterministic 5% of negatives with:
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-base-apache-smoke \
+--negative-keep-probability 0.05
+```
+
+You may change `0.05`, but use a matching checkpoint label such as `neg02`, `neg03`, or `neg05`. Never resume a checkpoint created with a different retention probability, batch size, or accumulation setting.
+
+The selected `0.05` setting retains 741,507 negatives for 161,214 positives in the combined corpus, or about 4.60 negatives per positive. The ratio varies by repository because each repository has a different candidate-pool size: it ranges from 2.90:1 for RedHat to 9.04:1 for Jira. A fixed 5% probability therefore approximates a 5:1 ratio only over the combined corpus; it does not impose a fixed per-repository class ratio. Prefer retrieval-derived hard negatives if later experiments need more informative negatives.
+
+| Dataset | Set records | Set steps | Point positives | Retained point records | Point steps |
+|---|---:|---:|---:|---:|---:|
+| Apache | 110,122 | 6,883 | 41,060 | 215,202 | 13,451 |
+| Jira | 101,100 | 6,319 | 17,792 | 178,656 | 11,166 |
+| RedHat | 57,935 | 3,621 | 31,447 | 122,571 | 7,661 |
+| MongoDB | 32,012 | 2,001 | 14,978 | 65,448 | 4,091 |
+| Qt | 14,707 | 920 | 5,341 | 28,605 | 1,788 |
+| Mojang | 152,611 | 9,539 | 50,596 | 292,239 | 18,265 |
+| All six | 468,487 | 29,281 | 161,214 | 902,721 | 56,421 |
+
+`--overwrite-output` replaces only the adapter named by a command, after training succeeds. Existing weights remain usable while training runs. Slurm arguments such as `--partition`, `--gres`, and `--job-name` must precede the script path.
+
+## 2. Apache: four production jobs
+
+### Apache Base, set retrieval
+
+```bash
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-apache-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization base \
-  --dataset Apache \
+  --dataset apache \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-set-apache-v1-full-exhaustive-b2-ga8"
 ```
 
-### A2-SR — CPT, set retrieval, Apache
+### Apache CPT, set retrieval
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-cpt-apache-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-apache-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization cpt \
-  --dataset Apache \
+  --dataset apache \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-set-apache-v1-full-exhaustive-b2-ga8"
 ```
 
-### A1-PW — Base, pointwise, Apache
+### Apache Base, pointwise
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-base-apache-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-apache-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization base \
-  --dataset Apache \
+  --dataset apache \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-pointwise-apache-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-### A2-PW — CPT, pointwise, Apache
+### Apache CPT, pointwise
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-cpt-apache-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-apache-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization cpt \
-  --dataset Apache \
+  --dataset apache \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-apache-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-## 3. Jira: four jobs
+## 3. Jira: four production jobs
 
-### J1-SR — Base, set retrieval, Jira
+### Jira Base, set retrieval
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-base-jira-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-jira-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization base \
-  --dataset Jira \
+  --dataset jira \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-set-jira-v1-full-exhaustive-b2-ga8"
 ```
 
-### J2-SR — CPT, set retrieval, Jira
+### Jira CPT, set retrieval
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-cpt-jira-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-jira-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization cpt \
-  --dataset Jira \
+  --dataset jira \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-set-jira-v1-full-exhaustive-b2-ga8"
 ```
 
-### J1-PW — Base, pointwise, Jira
+### Jira Base, pointwise
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-base-jira-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-jira-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization base \
-  --dataset Jira \
+  --dataset jira \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-pointwise-jira-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-### J2-PW — CPT, pointwise, Jira
+### Jira CPT, pointwise
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-cpt-jira-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-jira-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization cpt \
-  --dataset Jira \
+  --dataset jira \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-jira-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-## 4. RedHat: four jobs
+## 4. RedHat: four production jobs
 
-### R1-SR — Base, set retrieval, RedHat
+### RedHat Base, set retrieval
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-base-redhat-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-redhat-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization base \
-  --dataset RedHat \
+  --dataset redhat \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-set-redhat-v1-full-exhaustive-b2-ga8"
 ```
 
-### R2-SR — CPT, set retrieval, RedHat
+### RedHat CPT, set retrieval
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-cpt-redhat-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-redhat-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization cpt \
-  --dataset RedHat \
+  --dataset redhat \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-set-redhat-v1-full-exhaustive-b2-ga8"
 ```
 
-### R1-PW — Base, pointwise, RedHat
+### RedHat Base, pointwise
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-base-redhat-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-redhat-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization base \
-  --dataset RedHat \
+  --dataset redhat \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-pointwise-redhat-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-### R2-PW — CPT, pointwise, RedHat
+### RedHat CPT, pointwise
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-cpt-redhat-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-redhat-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization cpt \
-  --dataset RedHat \
+  --dataset redhat \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-redhat-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-## 5. MongoDB: four jobs
+## 5. MongoDB: four production jobs
 
-### MDB1-SR — Base, set retrieval, MongoDB
+### MongoDB Base, set retrieval
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-base-mongodb-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-mongodb-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization base \
-  --dataset MongoDB \
+  --dataset mongodb \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-set-mongodb-v1-full-exhaustive-b2-ga8"
 ```
 
-### MDB2-SR — CPT, set retrieval, MongoDB
+### MongoDB CPT, set retrieval
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-cpt-mongodb-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-mongodb-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization cpt \
-  --dataset MongoDB \
+  --dataset mongodb \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-set-mongodb-v1-full-exhaustive-b2-ga8"
 ```
 
-### MDB1-PW — Base, pointwise, MongoDB
+### MongoDB Base, pointwise
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-base-mongodb-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-mongodb-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization base \
-  --dataset MongoDB \
+  --dataset mongodb \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-pointwise-mongodb-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-### MDB2-PW — CPT, pointwise, MongoDB
+### MongoDB CPT, pointwise
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-cpt-mongodb-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-mongodb-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization cpt \
-  --dataset MongoDB \
+  --dataset mongodb \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-mongodb-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-## 6. Qt: four jobs
+## 6. Qt: four production jobs
 
-### Q1-SR — Base, set retrieval, Qt
+### Qt Base, set retrieval
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-base-qt-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-qt-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization base \
-  --dataset Qt \
+  --dataset qt \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-set-qt-v1-full-exhaustive-b2-ga8"
 ```
 
-### Q2-SR — CPT, set retrieval, Qt
+### Qt CPT, set retrieval
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-cpt-qt-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-qt-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization cpt \
-  --dataset Qt \
+  --dataset qt \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-set-qt-v1-full-exhaustive-b2-ga8"
 ```
 
-### Q1-PW — Base, pointwise, Qt
+### Qt Base, pointwise
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-base-qt-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-qt-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization base \
-  --dataset Qt \
+  --dataset qt \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-pointwise-qt-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-### Q2-PW — CPT, pointwise, Qt
+### Qt CPT, pointwise
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-cpt-qt-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-qt-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization cpt \
-  --dataset Qt \
+  --dataset qt \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-qt-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-## 7. Mojang: four jobs
+## 7. Mojang: four production jobs
 
-### MJ1-SR — Base, set retrieval, Mojang
+### Mojang Base, set retrieval
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-base-mojang-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-mojang-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization base \
-  --dataset Mojang \
+  --dataset mojang \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-set-mojang-v1-full-exhaustive-b2-ga8"
 ```
 
-### MJ2-SR — CPT, set retrieval, Mojang
+### Mojang CPT, set retrieval
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-cpt-mojang-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-mojang-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization cpt \
-  --dataset Mojang \
+  --dataset mojang \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-set-mojang-v1-full-exhaustive-b2-ga8"
 ```
 
-### MJ1-PW — Base, pointwise, Mojang
+### Mojang Base, pointwise
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-base-mojang-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-mojang-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization base \
-  --dataset Mojang \
+  --dataset mojang \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-pointwise-mojang-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-### MJ2-PW — CPT, pointwise, Mojang
+### Mojang CPT, pointwise
 
 ```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-cpt-mojang-smoke \
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-mojang-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization cpt \
-  --dataset Mojang \
+  --dataset mojang \
   --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-mojang-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-## 8. All six repositories: four jobs
+## 8. All six repositories: four production jobs
 
-The commands shown here are 10-step smoke tests because they explicitly pass `--max-steps 10`. An unsuffixed production command with `--dataset all` and no `--max-steps` uses every training row from all six repositories exactly once. It does not use temperature sampling.
-
-### T1-SR — Base, set retrieval, all repositories
-
-```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-base-all-smoke \
-  scripts/training/submit_train_sft_qwen35.sh \
-  --task set_retrieval \
-  --initialization base \
-  --dataset all \
-  --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
-```
-
-### T2-SR — CPT, set retrieval, all repositories
-
-```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-set-cpt-all-smoke \
-  scripts/training/submit_train_sft_qwen35.sh \
-  --task set_retrieval \
-  --initialization cpt \
-  --dataset all \
-  --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
-```
-
-### T1-PW — Base, pointwise, all repositories
-
-```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-base-all-smoke \
-  scripts/training/submit_train_sft_qwen35.sh \
-  --task pointwise \
-  --initialization base \
-  --dataset all \
-  --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
-```
-
-### T2-PW — CPT, pointwise, all repositories
-
-```bash
-sbatch --partition=a100 --gres=gpu:1 \
-  --job-name=sft-pw-cpt-all-smoke \
-  scripts/training/submit_train_sft_qwen35.sh \
-  --task pointwise \
-  --initialization cpt \
-  --dataset all \
-  --data-version v1_full \
-  --run-suffix smoke \
-  --max-steps 10 \
-  --eval-steps 5 \
-  --save-steps 5
-```
-
-## 9. Check submitted and running jobs
-
-```bash
-squeue -u "${USER}"
-```
-
-Inspect one log using its Slurm job ID:
-
-```bash
-tail -f logs/qwen35-sft-JOB_ID.out
-```
-
-Cancel a specific failed or incorrect job if necessary:
-
-```bash
-scancel JOB_ID
-```
-
-Do not cancel a healthy job only because model loading or the first streaming batch takes several minutes.
-
-## 10. Smoke-test output directories
-
-Examples of isolated smoke outputs are:
-
-```text
-~/scratch/llms_model/ilr_llms/adapters/qwen3.5-9b-base-sft-set-apache-v1-full-smoke
-~/scratch/llms_model/ilr_llms/adapters/qwen3.5-9b-cpt-sft-set-apache-v1-full-smoke
-~/scratch/llms_model/ilr_llms/adapters/qwen3.5-9b-base-sft-pointwise-apache-v1-full-smoke
-~/scratch/llms_model/ilr_llms/adapters/qwen3.5-9b-cpt-sft-pointwise-apache-v1-full-smoke
-```
-
-Checkpoints use the parallel `checkpoints/` hierarchy. Each adapter directory should contain `run_config.json`; a completed run also contains adapter weights, tokenizer files, and `validation_metrics.json`.
-
-## 11. Convert a smoke command into a production command
-
-After all relevant smoke tests pass, remove these four lines from a command:
-
-```text
---run-suffix smoke
---max-steps 10
---eval-steps 5
---save-steps 5
-```
-
-For example, convert the Apache CPT set-retrieval command in Section 2 by retaining its task, initialization, dataset, and data-version arguments while removing the four smoke arguments above.
-
-For repository-specific production runs, the launcher uses these initial defaults:
-
-| Task | Maximum sequence length | Maximum steps | Evaluation interval | Checkpoint interval |
-|---|---:|---:|---:|---:|
-| Set retrieval | 4096 | 1000 | 250 | 250 |
-| Pointwise | 2048 | 2000 | 250 | 250 |
-
-These are engineering starting points. Select final steps, learning rate, candidate-pool version, and stopping checkpoint using validation data. Do not select them from test results.
-
-For `--dataset all`, removing `--max-steps` changes the mode to one exhaustive pass:
-
-| Task | All-six training records | Effective batch | Resolved steps |
-|---|---:|---:|---:|
-| Set retrieval | 468,487 | 16 | 29,281 |
-| Pointwise, all negatives | 14,991,370 | 16 | 936,961 |
-| Pointwise, recommended 2% negatives | 457,817 | 16 | 28,614 |
-
-The recommended pointwise run keeps all 161,214 positives and an exact deterministic 2% of negatives from every repository. The four production commands below consistently use batch size 2 and gradient accumulation 8, giving effective batch size 16. Passing `--negative-keep-probability 1.0` instead creates a prohibitively long full-negative run. Exhaustive checkpoints use a separate checkpoint directory, and submitting the same command again automatically resumes its newest checkpoint.
-
-For set retrieval, exhaustive defaults save every 1,000 steps and evaluate every 1,465 steps. The recommended 2%-negative pointwise runs save every 1,000 steps and evaluate every 1,431 steps. This avoids applying the former 250-step evaluation interval thousands of times.
-
-### Production commands using all six datasets
-
-The following four commands activate exhaustive-source mode because they specify `--dataset all` and omit `--max-steps`. Set retrieval uses every row. Pointwise uses every positive and an exact 2% of negatives. They omit `--run-suffix`, so their final adapter names match the production evaluation commands in Section 12.
-
-#### Base initialization, set retrieval
+### All repositories Base, set retrieval
 
 ```bash
 sbatch --partition=i7_h200 --gres=gpu:1 \
@@ -616,12 +491,14 @@ sbatch --partition=i7_h200 --gres=gpu:1 \
   --initialization base \
   --dataset all \
   --data-version v1_full \
+  --training-mode exhaustive \
+  --overwrite-output \
   --per-device-train-batch-size 2 \
   --gradient-accumulation-steps 8 \
   --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-set-all-v1-full-exhaustive-b2-ga8"
 ```
 
-#### CPT initialization, set retrieval
+### All repositories CPT, set retrieval
 
 ```bash
 sbatch --partition=i7_h200 --gres=gpu:1 \
@@ -631,316 +508,101 @@ sbatch --partition=i7_h200 --gres=gpu:1 \
   --initialization cpt \
   --dataset all \
   --data-version v1_full \
+  --training-mode exhaustive \
+  --overwrite-output \
   --per-device-train-batch-size 2 \
   --gradient-accumulation-steps 8 \
   --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-set-all-v1-full-exhaustive-b2-ga8"
 ```
 
-#### Base initialization, pointwise
+### All repositories Base, pointwise
 
 ```bash
 sbatch --partition=i7_h200 --gres=gpu:1 \
-  --job-name=sft-pw-base-all-neg02-b2-ga8 \
+  --job-name=sft-pw-base-all-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization base \
   --dataset all \
   --data-version v1_full \
-  --negative-keep-probability 0.02 \
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
   --per-device-train-batch-size 2 \
   --gradient-accumulation-steps 8 \
-  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-pointwise-all-v1-full-exhaustive-neg02-b2-ga8"
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-pointwise-all-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-#### CPT initialization, pointwise
+### All repositories CPT, pointwise
 
 ```bash
 sbatch --partition=i7_h200 --gres=gpu:1 \
-  --job-name=sft-pw-cpt-all-neg02-b2-ga8 \
+  --job-name=sft-pw-cpt-all-neg05-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization cpt \
   --dataset all \
   --data-version v1_full \
-  --negative-keep-probability 0.02 \
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
   --per-device-train-batch-size 2 \
   --gradient-accumulation-steps 8 \
-  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-all-v1-full-exhaustive-neg02-b2-ga8"
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-all-v1-full-exhaustive-neg05-b2-ga8"
 ```
 
-Before consuming GPU time, verify the resolved coverage:
+## 9. Resuming and monitoring
+
+Check jobs:
 
 ```bash
-python scripts/training/train_sft_set_retrieval.py \
-  --initialization cpt \
-  --dataset all \
-  --data-version v1_full \
-  --per-device-train-batch-size 2 \
-  --gradient-accumulation-steps 8 \
-  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-set-all-v1-full-exhaustive-b2-ga8" \
-  --dry-run
+squeue -u "${USER}"
 ```
 
-The report should show `training_mode: exhaustive`, `records_per_pass: 468487`, and `resolved_max_steps: 29281`.
-
-Verify the recommended pointwise schedule separately:
+Inspect checkpoints:
 
 ```bash
-python scripts/training/train_sft_pointwise.py \
-  --initialization cpt \
-  --dataset all \
-  --data-version v1_full \
-  --negative-keep-probability 0.02 \
-  --per-device-train-batch-size 2 \
-  --gradient-accumulation-steps 8 \
-  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-all-v1-full-exhaustive-neg02-b2-ga8" \
-  --dry-run
+find ~/scratch/llms_model/ilr_llms/checkpoints \
+  -maxdepth 2 -type d -name 'checkpoint-*' -print | sort -V
 ```
 
-This report should show `records_per_pass: 457817` and `resolved_max_steps: 28614`.
+If a job reaches the wall-time, submit the identical command again. The new log must contain:
 
-For `--dataset all`, the launcher permits replacement of the matching unsuffixed final adapter. The existing adapter weights remain usable while training is running; final adapter files are replaced only after training succeeds. Other repository-specific adapter directories retain the non-empty-directory protection.
+```text
+Auto-resuming from .../checkpoint-N
+```
 
-For final paper runs, replace the smoke suffix with a seed-specific suffix and set the matching seed, such as `--run-suffix seed-42 --seed 42`. Use matching `seed-43` and `seed-44` runs only after the v2 data and final validation-selected hyperparameters have been frozen.
-
-## 12. Evaluate the production adapters on the test splits
-
-These commands match the adapters produced after removing the four smoke arguments. There is no `--adapter-suffix` in any command.
-
-Run from the project root and ensure the log directory already exists before calling `sbatch`:
+Do not change retention probability, batch size, accumulation, seed, or checkpoint path when resuming. Check completion with:
 
 ```bash
-cd ~/scratch/its_project/issue_link_retrieval_rl_post_training
-mkdir -p logs
+sacct -j JOB_ID --format=JobID,JobName,State,Elapsed,Timelimit,ExitCode
 ```
 
-Slurm options remain before the shell-script path. Arguments after `submit_evaluate_sft.sh` belong to the Python evaluator.
+## 10. Test evaluation
 
-### Apache test evaluations
-
-```bash
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-apache-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization base \
-  --model-dataset apache --eval-dataset apache \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-apache-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization cpt \
-  --model-dataset apache --eval-dataset apache \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-apache-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization base \
-  --model-dataset apache --eval-dataset apache \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-apache-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization cpt \
-  --model-dataset apache --eval-dataset apache \
-  --split test --data-version v1_full
-```
-
-### Jira test evaluations
-
-```bash
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-jira-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization base \
-  --model-dataset jira --eval-dataset jira \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-jira-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization cpt \
-  --model-dataset jira --eval-dataset jira \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-jira-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization base \
-  --model-dataset jira --eval-dataset jira \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-jira-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization cpt \
-  --model-dataset jira --eval-dataset jira \
-  --split test --data-version v1_full
-```
-
-### RedHat test evaluations
-
-```bash
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-redhat-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization base \
-  --model-dataset redhat --eval-dataset redhat \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-redhat-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization cpt \
-  --model-dataset redhat --eval-dataset redhat \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-redhat-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization base \
-  --model-dataset redhat --eval-dataset redhat \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-redhat-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization cpt \
-  --model-dataset redhat --eval-dataset redhat \
-  --split test --data-version v1_full
-```
-
-### MongoDB test evaluations
-
-```bash
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-mongodb-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization base \
-  --model-dataset mongodb --eval-dataset mongodb \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-mongodb-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization cpt \
-  --model-dataset mongodb --eval-dataset mongodb \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-mongodb-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization base \
-  --model-dataset mongodb --eval-dataset mongodb \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-mongodb-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization cpt \
-  --model-dataset mongodb --eval-dataset mongodb \
-  --split test --data-version v1_full
-```
-
-### Qt test evaluations
-
-```bash
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-qt-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization base \
-  --model-dataset qt --eval-dataset qt \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-qt-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization cpt \
-  --model-dataset qt --eval-dataset qt \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-qt-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization base \
-  --model-dataset qt --eval-dataset qt \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-qt-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization cpt \
-  --model-dataset qt --eval-dataset qt \
-  --split test --data-version v1_full
-```
-
-### Mojang test evaluations
-
-```bash
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-mojang-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization base \
-  --model-dataset mojang --eval-dataset mojang \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-mojang-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization cpt \
-  --model-dataset mojang --eval-dataset mojang \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-mojang-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization base \
-  --model-dataset mojang --eval-dataset mojang \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-mojang-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization cpt \
-  --model-dataset mojang --eval-dataset mojang \
-  --split test --data-version v1_full
-```
-
-### All-six-repository test evaluations
-
-The `all` adapters are evaluated across all six test files in one job. `metrics.json` contains overall and per-repository results.
-
-```bash
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-base-all-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization base \
-  --model-dataset all --eval-dataset all \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-set-cpt-all-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task set_retrieval --initialization cpt \
-  --model-dataset all --eval-dataset all \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-base-all-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization base \
-  --model-dataset all --eval-dataset all \
-  --split test --data-version v1_full
-
-sbatch --partition=a100 --gres=gpu:1 --job-name=eval-pw-cpt-all-test \
-  scripts/evaluation/submit_evaluate_sft.sh \
-  --task pointwise --initialization cpt \
-  --model-dataset all --eval-dataset all \
-  --split test --data-version v1_full
-```
-
-Submit exactly the same 28 commands with the matrix helper:
+Submit the 28 default-threshold test evaluations with:
 
 ```bash
 scripts/evaluation/submit_evaluation_matrix.sh \
-  --partition a100 \
+  --partition i7_h200 \
   --gres gpu:1 \
   --split test \
   --data-version v1_full
 ```
 
-Preview them without submitting:
+Preview them with:
 
 ```bash
 scripts/evaluation/submit_evaluation_matrix.sh \
-  --partition a100 \
+  --partition i7_h200 \
   --gres gpu:1 \
   --split test \
   --data-version v1_full \
   --dry-run
 ```
 
-The pointwise commands use the default threshold of `0.5`. For classification results with a tuned threshold, first evaluate the matching adapter on `--split validation --select-threshold`, then pass the resulting value to its test command as `--threshold VALUE`. Never select this threshold from the test split. Ranking metrics such as MAP, MRR, Recall@k, Hits@k, and nDCG@k do not depend on this binary threshold.
-
-Evaluation artifacts are written under:
+For pointwise classification, select the threshold on validation and freeze it for test. See `docs/sft_evaluation.md`. Results are written under:
 
 ```text
 experiment_results/evaluation/<adapter>/<evaluation-dataset>-v1_full/test/full/
 ```
-
-Each completed evaluation contains `run_config.json`, `metrics.json`, and compressed `predictions.jsonl.gz`.

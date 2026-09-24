@@ -73,7 +73,7 @@ An unsuffixed `--dataset all` run with no explicit `--max-steps` uses exhaustive
 | Set retrieval | 468,487 | 16 | 29,281 |
 | Pointwise, all negatives | 14,991,370 | 16 | 936,961 |
 
-The recommended pointwise all-repository run keeps every one of the 161,214 positives and an exact deterministic 2% of the 14,830,156 negatives. This retains 457,817 records and resolves to 28,614 steps at effective batch size 16. The selector uses an exact per-repository quota, so all six repositories contribute data without relying on an approximate random count.
+The recommended pointwise all-repository run keeps every one of the 161,214 positives and an exact deterministic 2% of the 14,830,156 negatives. This retains 457,817 records and resolves to 28,614 steps at effective batch size 16. The value is supplied at runtime with `--negative-keep-probability 0.02`; other values are permitted. The selector uses an exact per-repository quota of `round(p * negative_count)`, so all repositories contribute data without relying on an approximate random count. Changing `p` requires a new checkpoint directory.
 
 Supplying `--max-steps` selects fixed-step mode, including smoke tests. In fixed-step all-repository ablations, temperature sampling uses:
 

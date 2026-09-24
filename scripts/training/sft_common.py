@@ -151,8 +151,6 @@ def resolve_training_plan(args: argparse.Namespace, task: str, manifests) -> arg
     explicit_steps = args.max_steps is not None
     if args.training_mode == "auto":
         args.training_mode = "fixed_steps" if explicit_steps or args.dataset != "all" else "exhaustive"
-    if args.training_mode == "exhaustive" and args.dataset != "all":
-        raise ValueError("Exhaustive mode is restricted to --dataset all; repository-specific jobs are unchanged")
     if args.training_mode == "exhaustive" and explicit_steps:
         raise ValueError("Do not combine --training-mode exhaustive with --max-steps")
 
