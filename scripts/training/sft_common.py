@@ -165,13 +165,27 @@ def resolve_training_plan(args: argparse.Namespace, task: str, manifests) -> arg
         args.empty_keep_probability if args.empty_keep_probability is not None else 1.0
     )
     prefix = "set" if task == "set_retrieval" else "point"
-    args.records_per_pass = sum(
-        int(manifest["counts"][f"{prefix}_train"]) for manifest in manifests.values()
-    )
+    args.retained_records_by_repository = {}
+    for repository, manifest in manifests.items():
+        total = int(manifest["counts"][f"{prefix}_train"])
+        if task == "pointwise" and args.training_mode == "exhaustive":
+            positives = int(manifest.get("eligible_gold", {}).get("train", -1))
+            if positives < 0:
+                raise ValueError(f"{repository} manifest lacks eligible_gold.train")
+            negatives = total - positives
+            retained = positives + round(args.negative_keep_probability * negatives)
+        else:
+            retained = total
+        args.retained_records_by_repository[repository] = retained
+    args.records_per_pass = sum(args.retained_records_by_repository.values())
     effective_batch = args.per_device_train_batch_size * args.gradient_accumulation_steps
     if args.training_mode == "exhaustive":
-        if args.negative_keep_probability != 1.0 or args.empty_keep_probability != 1.0:
-            raise ValueError("Exhaustive mode requires both keep probabilities to be 1.0")
+        if args.empty_keep_probability != 1.0:
+            raise ValueError("Exhaustive mode requires --empty-keep-probability 1.0")
+        if task == "set_retrieval" and args.negative_keep_probability != 1.0:
+            raise ValueError("--negative-keep-probability applies only to pointwise training")
+        if task == "pointwise" and args.negative_keep_probability < 1.0 and args.dataloader_num_workers != 1:
+            raise ValueError("Exact pointwise negative selection requires --dataloader-num-workers 1")
         args.max_steps = math.ceil(args.records_per_pass / effective_batch)
         # Do not reuse checkpoints from the former short fixed-step all-data run.
         if not args.checkpoint_dir_was_explicit:
@@ -409,6 +423,30 @@ def keep_training_record(record: dict[str, Any], args, task: str) -> bool:
     return True
 
 
+def exact_pointwise_selector(args, repository: str, manifest):
+    """Keep all positives and an exact, deterministic fraction of negatives."""
+    total = int(manifest["counts"]["point_train"])
+    positives = int(manifest["eligible_gold"]["train"])
+    negative_total = total - positives
+    negative_target = round(args.negative_keep_probability * negative_total)
+    if negative_target >= negative_total:
+        return lambda row: True
+    phase_key = f"{args.seed}:{repository}:pointwise-negative-phase"
+    accumulator = int(hashlib.sha256(phase_key.encode("utf-8")).hexdigest()[:16], 16) % negative_total
+
+    def select(row):
+        nonlocal accumulator
+        if int(row["label"]) == 1:
+            return True
+        accumulator += negative_target
+        if accumulator >= negative_total:
+            accumulator -= negative_total
+            return True
+        return False
+
+    return select
+
+
 def load_streams(
     args, task, tokenizer, paths, manifests,
     load_dataset, interleave_datasets, concatenate_datasets,
@@ -420,7 +458,10 @@ def load_streams(
             "json", data_files=str(paths[repository][split]), split="train", streaming=True
         )
         if split == "train":
-            stream = stream.filter(lambda row: keep_training_record(row, args, task))
+            if task == "pointwise" and args.training_mode == "exhaustive":
+                stream = stream.filter(exact_pointwise_selector(args, repository, manifests[repository]))
+            else:
+                stream = stream.filter(lambda row: keep_training_record(row, args, task))
             stream = stream.shuffle(seed=args.seed, buffer_size=args.shuffle_buffer_size)
         columns = list(stream.features) if stream.features is not None else None
         stream = stream.map(

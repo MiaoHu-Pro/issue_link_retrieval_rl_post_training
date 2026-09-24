@@ -66,16 +66,18 @@ Evaluate candidate Recall@M for several values such as 32, 64, 128, 500, and 100
 
 The JSONL files are streamed. They are not loaded or tokenized into a second full Arrow dataset, because individual training files are multiple gigabytes.
 
-An unsuffixed `--dataset all` run with no explicit `--max-steps` uses exhaustive mode. It concatenates the six shuffled repository streams without replacement, retains every row, and calculates one-pass optimizer steps from the manifests:
+An unsuffixed `--dataset all` run with no explicit `--max-steps` uses exhaustive mode. It concatenates the six shuffled repository streams without replacement and calculates one-pass optimizer steps from the manifests. The recommended production commands use batch size 2 and gradient accumulation 8:
 
 | Task | Training records | Effective batch | One-pass optimizer steps |
 |---|---:|---:|---:|
-| Set retrieval | 468,487 | 8 | 58,561 |
-| Pointwise | 14,991,370 | 16 | 936,961 |
+| Set retrieval | 468,487 | 16 | 29,281 |
+| Pointwise, all negatives | 14,991,370 | 16 | 936,961 |
+
+The recommended pointwise all-repository run keeps every one of the 161,214 positives and an exact deterministic 2% of the 14,830,156 negatives. This retains 457,817 records and resolves to 28,614 steps at effective batch size 16. The selector uses an exact per-repository quota, so all six repositories contribute data without relying on an approximate random count.
 
 Supplying `--max-steps` selects fixed-step mode, including smoke tests. In fixed-step all-repository ablations, temperature sampling uses:
 
-To avoid thousands of validation passes, exhaustive defaults scale with the resolved run length. Set retrieval logs every 59 steps, saves every 1,000 steps, and evaluates every 2,929 steps. Pointwise logs every 937 steps, saves every 1,000 steps, and evaluates every 46,849 steps. Explicit `--logging-steps`, `--save-steps`, and `--eval-steps` still override these values.
+To avoid thousands of validation passes, exhaustive defaults scale with the resolved run length. With the recommended configurations, set retrieval logs every 30 steps, saves every 1,000 steps, and evaluates every 1,465 steps. The 2%-negative pointwise run logs every 29 steps, saves every 1,000 steps, and evaluates every 1,431 steps. Explicit `--logging-steps`, `--save-steps`, and `--eval-steps` still override these values.
 
     p_d = n_d^alpha / sum_j(n_j^alpha), alpha = 0.5
 
@@ -119,7 +121,7 @@ Each query contributes up to 32 pointwise records, while positives are sparse. F
 
     --negative-keep-probability 0.10
 
-The decision is a stable hash of seed, query ID, and candidate ID, so repeated runs use the same subset. Exhaustive `--dataset all` training sets the retention probability to `1.0` and visits all 14,991,370 pointwise rows. Test evaluation must use the complete natural candidate pool. Negative downsampling changes the training prior, so classification thresholds must be selected on the complete validation set.
+The decision is deterministic, so repeated runs use the same subset. Exhaustive pointwise training may set a smaller negative retention probability while keeping all positives and completing one exact pass over the retained rows. The recommended `0.02` setting retains 457,817 rows. A `1.0` setting visits all 14,991,370 rows but takes about 60 days per model at the observed one-H200 speed. Test evaluation must use the complete natural candidate pool. Negative downsampling changes the training prior, so classification thresholds must be selected on the complete validation set.
 
 ## Dry runs
 
@@ -134,9 +136,12 @@ Dry runs verify data paths and manifests without loading model weights:
 For the all-repository mixture:
 
     python scripts/training/train_sft_set_retrieval.py \
-      --initialization cpt --dataset all --dry-run
+      --initialization cpt --dataset all \
+      --per-device-train-batch-size 2 \
+      --gradient-accumulation-steps 8 \
+      --dry-run
 
-The dry-run output must say `"training_mode": "exhaustive"`, with 468,487 records and 58,561 steps for set retrieval.
+The dry-run output must say `"training_mode": "exhaustive"`, with 468,487 records and 29,281 steps for set retrieval.
 
 ## Slurm submission
 

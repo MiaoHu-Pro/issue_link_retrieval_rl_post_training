@@ -594,63 +594,78 @@ For `--dataset all`, removing `--max-steps` changes the mode to one exhaustive p
 
 | Task | All-six training records | Effective batch | Resolved steps |
 |---|---:|---:|---:|
-| Set retrieval | 468,487 | 8 | 58,561 |
-| Pointwise | 14,991,370 | 16 | 936,961 |
+| Set retrieval | 468,487 | 16 | 29,281 |
+| Pointwise, all negatives | 14,991,370 | 16 | 936,961 |
+| Pointwise, recommended 2% negatives | 457,817 | 16 | 28,614 |
 
-The pointwise exhaustive run also keeps 100% of negative rows. These runs are much larger than the former 1,000/2,000-step jobs and may exceed one 60-hour allocation. Exhaustive checkpoints use a separate `-exhaustive` checkpoint directory, and submitting the same command again automatically resumes its newest checkpoint.
+The recommended pointwise run keeps all 161,214 positives and an exact deterministic 2% of negatives from every repository. The four production commands below consistently use batch size 2 and gradient accumulation 8, giving effective batch size 16. Passing `--negative-keep-probability 1.0` instead creates a prohibitively long full-negative run. Exhaustive checkpoints use a separate checkpoint directory, and submitting the same command again automatically resumes its newest checkpoint.
 
-For set retrieval, exhaustive defaults save every 1,000 steps and evaluate every 2,929 steps. For pointwise, they save every 1,000 steps and evaluate every 46,849 steps. This avoids applying the former 250-step evaluation interval thousands of times.
+For set retrieval, exhaustive defaults save every 1,000 steps and evaluate every 1,465 steps. The recommended 2%-negative pointwise runs save every 1,000 steps and evaluate every 1,431 steps. This avoids applying the former 250-step evaluation interval thousands of times.
 
-### Production commands using every row from all six datasets
+### Production commands using all six datasets
 
-The following four commands activate exhaustive mode because they specify `--dataset all` and omit `--max-steps`. They also omit `--run-suffix`, so their final adapter names match the production evaluation commands in Section 12.
+The following four commands activate exhaustive-source mode because they specify `--dataset all` and omit `--max-steps`. Set retrieval uses every row. Pointwise uses every positive and an exact 2% of negatives. They omit `--run-suffix`, so their final adapter names match the production evaluation commands in Section 12.
 
 #### Base initialization, set retrieval
 
 ```bash
 sbatch --partition=i7_h200 --gres=gpu:1 \
-  --job-name=sft-set-base-all-full \
+  --job-name=sft-set-base-all-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization base \
   --dataset all \
-  --data-version v1_full
+  --data-version v1_full \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-set-all-v1-full-exhaustive-b2-ga8"
 ```
 
 #### CPT initialization, set retrieval
 
 ```bash
 sbatch --partition=i7_h200 --gres=gpu:1 \
-  --job-name=sft-set-cpt-all-full \
+  --job-name=sft-set-cpt-all-full-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task set_retrieval \
   --initialization cpt \
   --dataset all \
-  --data-version v1_full
+  --data-version v1_full \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-set-all-v1-full-exhaustive-b2-ga8"
 ```
 
 #### Base initialization, pointwise
 
 ```bash
 sbatch --partition=i7_h200 --gres=gpu:1 \
-  --job-name=sft-pw-base-all-full \
+  --job-name=sft-pw-base-all-neg02-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization base \
   --dataset all \
-  --data-version v1_full
+  --data-version v1_full \
+  --negative-keep-probability 0.02 \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-pointwise-all-v1-full-exhaustive-neg02-b2-ga8"
 ```
 
 #### CPT initialization, pointwise
 
 ```bash
 sbatch --partition=i7_h200 --gres=gpu:1 \
-  --job-name=sft-pw-cpt-all-full \
+  --job-name=sft-pw-cpt-all-neg02-b2-ga8 \
   scripts/training/submit_train_sft_qwen35.sh \
   --task pointwise \
   --initialization cpt \
   --dataset all \
-  --data-version v1_full
+  --data-version v1_full \
+  --negative-keep-probability 0.02 \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-all-v1-full-exhaustive-neg02-b2-ga8"
 ```
 
 Before consuming GPU time, verify the resolved coverage:
@@ -660,10 +675,29 @@ python scripts/training/train_sft_set_retrieval.py \
   --initialization cpt \
   --dataset all \
   --data-version v1_full \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-set-all-v1-full-exhaustive-b2-ga8" \
   --dry-run
 ```
 
-The report should show `training_mode: exhaustive`, `records_per_pass: 468487`, and `resolved_max_steps: 58561`.
+The report should show `training_mode: exhaustive`, `records_per_pass: 468487`, and `resolved_max_steps: 29281`.
+
+Verify the recommended pointwise schedule separately:
+
+```bash
+python scripts/training/train_sft_pointwise.py \
+  --initialization cpt \
+  --dataset all \
+  --data-version v1_full \
+  --negative-keep-probability 0.02 \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-all-v1-full-exhaustive-neg02-b2-ga8" \
+  --dry-run
+```
+
+This report should show `records_per_pass: 457817` and `resolved_max_steps: 28614`.
 
 For `--dataset all`, the launcher permits replacement of the matching unsuffixed final adapter. The existing adapter weights remain usable while training is running; final adapter files are replaced only after training succeeds. Other repository-specific adapter directories retain the non-empty-directory protection.
 

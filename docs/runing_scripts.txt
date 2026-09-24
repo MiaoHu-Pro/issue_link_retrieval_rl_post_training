@@ -234,6 +234,63 @@ sbatch --partition=i7_h200 --gres=gpu:1 \
   --data-version v1_full
 
 
+
+new command to training all data:
+
+The following four commands activate exhaustive-source mode because they specify --dataset all and omit --max-steps. Set retrieval uses every row. Pointwise uses every positive and an exact 2% of negatives. They omit --run-suffix, so their final adapter names match the production evaluation commands in Section 12.
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-all-full-b2-ga8 \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization base \
+  --dataset all \
+  --data-version v1_full \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-set-all-v1-full-exhaustive-b2-ga8"
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-all-full-b2-ga8 \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization cpt \
+  --dataset all \
+  --data-version v1_full \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-set-all-v1-full-exhaustive-b2-ga8"
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-all-neg02-b2-ga8 \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization base \
+  --dataset all \
+  --data-version v1_full \
+  --negative-keep-probability 0.02 \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-pointwise-all-v1-full-exhaustive-neg02-b2-ga8"
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-all-neg02-b2-ga8 \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization cpt \
+  --dataset all \
+  --data-version v1_full \
+  --negative-keep-probability 0.02 \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-all-v1-full-exhaustive-neg02-b2-ga8"
+
+
+
+
 -----
 test all datasets (new command):
 Use these four commands after the corresponding exhaustive training jobs complete.
