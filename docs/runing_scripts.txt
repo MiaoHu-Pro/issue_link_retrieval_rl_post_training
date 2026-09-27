@@ -2,10 +2,124 @@
 Apache:
 running:
 
-sbatch --partition=a100 --gres=gpu:1   --job-name=sft-pw-cpt-apache-smoke   scripts/training/submit_train_sft_qwen35.sh   --task pointwise   --initialization cpt   --dataset Apache   --data-version v1_full
-sbatch --partition=a100 --gres=gpu:1   --job-name=sft-pw-base-apache-smoke   scripts/training/submit_train_sft_qwen35.sh   --task pointwise   --initialization base   --dataset Apache   --data-version v1_full
-sbatch --partition=a100 --gres=gpu:1   --job-name=sft-set-cpt-apache-smoke   scripts/training/submit_train_sft_qwen35.sh   --task set_retrieval   --initialization cpt   --dataset Apache   --data-version v1_full
-sbatch --partition=swarm_h100 --gres=gpu:1   --job-name=sft-set-base-apache   scripts/training/submit_train_sft_qwen35.sh   --task set_retrieval   --initialization base   --dataset Apache   --data-version v1_full
+new commands:
+
+just using Apache dataset to training and testing:
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-base-apache-full-b2-ga8 \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization base \
+  --dataset apache \
+  --data-version v1_full \
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-set-apache-v1-full-exhaustive-b2-ga8"
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-set-cpt-apache-full-b2-ga8 \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task set_retrieval \
+  --initialization cpt \
+  --dataset apache \
+  --data-version v1_full \
+  --training-mode exhaustive \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-set-apache-v1-full-exhaustive-b2-ga8"
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-base-apache-neg05-b2-ga8 \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization base \
+  --dataset apache \
+  --data-version v1_full \
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-base-sft-pointwise-apache-v1-full-exhaustive-neg05-b2-ga8"
+
+
+sbatch --partition=i7_h200 --gres=gpu:1 \
+  --job-name=sft-pw-cpt-apache-neg05-b2-ga8 \
+  scripts/training/submit_train_sft_qwen35.sh \
+  --task pointwise \
+  --initialization cpt \
+  --dataset apache \
+  --data-version v1_full \
+  --training-mode exhaustive \
+  --negative-keep-probability 0.05 \
+  --overwrite-output \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-apache-v1-full-exhaustive-neg05-b2-ga8"
+
+
+Test for Apache (new commands):
+
+ ### Apache Base — set retrieval
+
+  sbatch --partition=i7_h200 --gres=gpu:1 \
+    --job-name=eval-set-base-apache-test \
+    scripts/evaluation/submit_evaluate_sft.sh \
+    --task set_retrieval \
+    --initialization base \
+    --model-dataset apache \
+    --eval-dataset apache \
+    --split test \
+    --data-version v1_full
+
+  ### Apache CPT — set retrieval
+
+  sbatch --partition=i7_h200 --gres=gpu:1 \
+    --job-name=eval-set-cpt-apache-test \
+    scripts/evaluation/submit_evaluate_sft.sh \
+    --task set_retrieval \
+    --initialization cpt \
+    --model-dataset apache \
+    --eval-dataset apache \
+    --split test \
+    --data-version v1_full
+
+  ### Apache Base — pointwise
+
+  sbatch --partition=i7_h200 --gres=gpu:1 \
+    --job-name=eval-pw-base-apache-test \
+    scripts/evaluation/submit_evaluate_sft.sh \
+    --task pointwise \
+    --initialization base \
+    --model-dataset apache \
+    --eval-dataset apache \
+    --split test \
+    --data-version v1_full \
+    --threshold 0.5
+
+  ### Apache CPT — pointwise
+
+  sbatch --partition=i7_h200 --gres=gpu:1 \
+    --job-name=eval-pw-cpt-apache-test \
+    scripts/evaluation/submit_evaluate_sft.sh \
+    --task pointwise \
+    --initialization cpt \
+    --model-dataset apache \
+    --eval-dataset apache \
+    --split test \
+    --data-version v1_full \
+    --threshold 0.5
+
+
+--------------------------
+
+
 
 srun --jobid=1611934 --overlap nvidia-smi
 
@@ -289,6 +403,8 @@ sbatch --partition=i7_h200 --gres=gpu:1 \
   --checkpoint-dir "${HOME}/scratch/llms_model/ilr_llms/checkpoints/qwen3.5-9b-cpt-sft-pointwise-all-v1-full-exhaustive-neg02-b2-ga8"
 
 
+test for  sft-pw-cpt-all-neg02-b2-ga8 and sft-pw-base-all-neg02-b2-ga8:
+
 
 
 -----
@@ -319,6 +435,8 @@ Use these four commands after the corresponding exhaustive training jobs complet
     --eval-dataset all \
     --split test \
     --data-version v1_full
+
+
 
   ### Base, pointwise
 
